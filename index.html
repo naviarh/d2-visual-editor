@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>D2 visual editor (xyflow system)</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    color: #1f2430; user-select: none;
+  }
+  #toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; background: #f6f7f9; border-bottom: 1px solid #dfe2e8;
+  }
+  button {
+    padding: 6px 12px; border: 1px solid #c9cdd6; border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 13px; line-height: 1.2;
+  }
+  button:hover { background: #f0f2f5; }
+  button.active { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+  button.primary { background: #2f6fed; border-color: #2f6fed; color: #fff; font-weight: 600; }
+  button.primary:hover { background: #2459c9; }
+  .sep { width: 1px; height: 20px; background: #dfe2e8; }
+  #hint { margin-left: auto; color: #667085; font-size: 13px; }
+  #flow { flex: 1; min-width: 0; position: relative; overflow: hidden; background: #fbfbfd; }
+  #pane { position: absolute; inset: 0; touch-action: none; }
+  #viewport { position: absolute; inset: 0; transform-origin: 0 0; }
+  #edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; z-index: 10; pointer-events: none; }
+  .edge { stroke: #8a93a6; stroke-width: 2; fill: none; }
+  .edge-hit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
+  .edge-g.selected .edge { stroke: #2f6fed; stroke-width: 3; }
+  .elabel { fill: #1f2430; font: 12px system-ui; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+  #nodes { position: absolute; left: 0; top: 0; }
+  .node {
+    position: absolute; border: 2px solid #7a8699; border-radius: 8px;
+    background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.12);
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .node.selected { border-color: #2f6fed; box-shadow: 0 0 0 3px rgba(47,111,237,.25); z-index: 5; }
+  .node.container { border-style: dashed; background: rgba(242, 246, 255, 0.5); align-items: flex-start; justify-content: flex-start; }
+  .node.container .nlabel { position: absolute; top: 4px; left: 8px; font-size: 12px; font-weight: 700; color: #3b5fbd; }
+  .node.group { outline: 3px solid #e8b51e; outline-offset: 3px; }
+  .node.src { border-color: #2f9e44; box-shadow: 0 0 0 3px rgba(47,158,68,.25); }
+  .nlabel { font-size: 14px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; }
+  #split { flex: 1; display: flex; min-height: 0; }
+  #code-panel { width: 33.333%; min-width: 200px; display: flex; flex-direction: column; border-right: 1px solid #dfe2e8; }
+  #divider { flex: 0 0 6px; cursor: col-resize; background: #e6e8ee; }
+  #divider:hover, #divider:active { background: #c9cdd6; }
+  .outbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #eef0f3; font-size: 13px; }
+  .outbar #btnCopy { margin-left: auto; }
+  #outStatus { color: #2f9e44; }
+  #out { flex: 1; min-height: 0; width: 100%; border: none; outline: none; resize: none; padding: 10px 12px;
+         background: #f6f8fa; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; user-select: text; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button id="btnBlock">+ Блок</button>
+  <button id="btnEdge">Стрелка</button>
+  <button id="btnGroup">Группировать</button>
+  <span class="sep"></span>
+  <button id="btnZoomIn">+</button>
+  <button id="btnZoomOut">−</button>
+  <button id="btnFit">Fit</button>
+  <span id="hint"></span>
+</div>
+
+<div id="split">
+  <div id="code-panel">
+    <div class="outbar"><b>Код D2</b><button id="btnCopy">Копировать</button><span id="outStatus"></span></div>
+    <textarea id="out" readonly spellcheck="false" wrap="off"></textarea>
+  </div>
+  <div id="divider" title="Перетащите, чтобы изменить ширину"></div>
+  <div id="flow">
+    <div id="pane">
+      <div id="viewport">
+        <svg id="edges"></svg>
+        <div id="nodes"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/@xyflow/system/dist/umd/index.js"></script>
+<script>
+"use strict";
+
+const XYF = window.XYFlowSystem;
+const pane = document.getElementById("pane");
+const viewportEl = document.getElementById("viewport");
+const nodesEl = document.getElementById("nodes");
+const svgEl = document.getElementById("edges");
+
+const nodes = new Map();
+const edges = [];
+let viewport = { x: 0, y: 0, zoom: 1 };
+let selectedId = null;
+let selectedEdgeId = null;
+let mode = null;
+let edgeSrc = null;
+let groupParent = null;
+let idCounter = 1;
+
+const STORE_KEY = "d2editor:v1";
+const GEN_IDLE_MS = 1000;
+let saveTimer = null;
+let genTimer = null;
+
+function queueGen() {
+  clearTimeout(genTimer);
+  genTimer = setTimeout(() => {
+    document.getElementById("out").value = generateD2();
+  }, GEN_IDLE_MS);
+}
+
+function queueSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveState, 400);
+}
+
+function saveState() {
+  try {
+    const data = {
+      v: 1,
+      nodes: [...nodes.values()].map((n) => ({ ...n, children: n.children.slice() })),
+      edges,
+      idCounter,
+      viewport
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  } catch (e) {
+    // переполнение хранилища или приватный режим — молча пропускаем
+  }
+}
+
+function loadState() {
+  let raw;
+  try {
+    raw = localStorage.getItem(STORE_KEY);
+  } catch (e) {
+    return false;
+  }
+  if (!raw) return false;
+  try {
+    const data = JSON.parse(raw);
+    if (!data || data.v !== 1 || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) return false;
+    nodes.clear();
+    for (const n of data.nodes) {
+      if (!n || typeof n.id !== "string") return false;
+      nodes.set(n.id, { ...n, children: n.children || [] });
+    }
+    edges.length = 0;
+    edges.push(...data.edges);
+    if (Number.isFinite(data.idCounter)) idCounter = data.idCounter;
+    if (data.viewport && Number.isFinite(data.viewport.x)) viewport = { ...data.viewport };
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function absPos(n) {
+  let x = n.x, y = n.y, p = n.parentId;
+  while (p && nodes.has(p)) {
+    const par = nodes.get(p);
+    x += par.x; y += par.y;
+    p = par.parentId;
+  }
+  return { x, y };
+}
+
+function isContainer(n) {
+  return !!n.children && n.children.length > 0;
+}
+
+function boxSize(n) {
+  if (!isContainer(n)) return { w: n.w, h: n.h };
+  const PAD = 24, HEAD = 28;
+  let w = 0, h = 0;
+  for (const id of n.children) {
+    const c = nodes.get(id);
+    if (!c) continue;
+    const s = boxSize(c);
+    w = Math.max(w, c.x + s.w);
+    h = Math.max(h, c.y + s.h);
+  }
+  return { w: w + PAD * 2, h: h + HEAD + PAD };
+}
+
+function treeOrder() {
+  const order = [];
+  const visit = (n) => {
+    order.push(n);
+    for (const id of n.children) {
+      const c = nodes.get(id);
+      if (c) visit(c);
+    }
+  };
+  for (const n of nodes.values()) {
+    if (!n.parentId || !nodes.has(n.parentId)) visit(n);
+  }
+  return order;
+}
+
+function isDescendant(ancId, nodeId) {
+  let n = nodes.get(nodeId);
+  while (n) {
+    if (n.id === ancId) return true;
+    n = n.parentId ? nodes.get(n.parentId) : null;
+  }
+  return false;
+}
+
+function setParent(n, parId) {
+  const old = n.parentId && nodes.has(n.parentId) ? nodes.get(n.parentId) : null;
+  if (old) {
+    const i = old.children.indexOf(n.id);
+    if (i >= 0) old.children.splice(i, 1);
+  }
+  n.parentId = parId;
+  const par = parId && nodes.has(parId) ? nodes.get(parId) : null;
+  if (par && par.children.indexOf(n.id) < 0) par.children.push(n.id);
+}
+
+function normalizeContainer(par) {
+  if (!par.children.length) return;
+  const PAD = 24, HEAD = 28;
+  let minX = Infinity, minY = Infinity;
+  for (const id of par.children) {
+    const c = nodes.get(id);
+    if (!c) continue;
+    minX = Math.min(minX, c.x);
+    minY = Math.min(minY, c.y);
+  }
+  const shiftX = PAD - minX;
+  const shiftY = HEAD - minY;
+  if (shiftX !== 0 || shiftY !== 0) {
+    par.x -= shiftX;
+    par.y -= shiftY;
+    for (const id of par.children) {
+      const c = nodes.get(id);
+      if (!c) continue;
+      c.x += shiftX;
+      c.y += shiftY;
+    }
+  }
+}
+
+function applyViewport(vp) {
+  viewport = vp;
+  viewportEl.style.transform = "translate(" + vp.x + "px," + vp.y + "px) scale(" + vp.zoom + ")";
+  queueSave();
+}
+
+const panZoom = XYF.XYPanZoom({
+  domNode: pane,
+  minZoom: 0.2,
+  maxZoom: 4,
+  translateExtent: XYF.infiniteExtent,
+  viewport: { x: 0, y: 0, zoom: 1 },
+  onDraggingChange: () => {}
+});
+panZoom.update({
+  panOnDrag: true,
+  panOnScroll: false,
+  zoomOnScroll: true,
+  zoomOnPinch: true,
+  zoomOnDoubleClick: false,
+  zoomActivationKeyPressed: false,
+  panOnScrollMode: XYF.PanOnScrollMode.Free,
+  preventScrolling: true,
+  userSelectionActive: false,
+  connectionInProgress: false,
+  selectionOnDrag: false,
+  lib: "xy",
+  noPanClassName: "nopan",
+  noWheelClassName: "nowheel",
+  paneClickDistance: 0,
+  onTransformChange: (view) => applyViewport({ x: view[0], y: view[1], zoom: view[2] }),
+  onPaneContextMenu: (e) => e.preventDefault()
+});
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function edgeGeometry(sa, ss, ta, ts) {
+  const scx = sa.x + ss.w / 2, scy = sa.y + ss.h / 2;
+  const tcx = ta.x + ts.w / 2, tcy = ta.y + ts.h / 2;
+  const adx = tcx - scx, ady = tcy - scy;
+  const border = (cx, cy, hw, hh, dx, dy) => {
+    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    const s = Math.min(hw / Math.abs(dx), hh / Math.abs(dy));
+    return { x: cx + dx * s, y: cy + dy * s };
+  };
+  const sp = border(scx, scy, ss.w / 2, ss.h / 2, adx, ady);
+  const tp = border(tcx, tcy, ts.w / 2, ts.h / 2, -adx, -ady);
+  let spPos, tpPos;
+  if (Math.abs(adx) > Math.abs(ady)) {
+    spPos = adx > 0 ? XYF.Position.Right : XYF.Position.Left;
+    tpPos = adx > 0 ? XYF.Position.Left : XYF.Position.Right;
+  } else {
+    spPos = ady > 0 ? XYF.Position.Bottom : XYF.Position.Top;
+    tpPos = ady > 0 ? XYF.Position.Top : XYF.Position.Bottom;
+  }
+  return { sp, tp, spPos, tpPos };
+}
+
+function renderEdges() {
+  let inner = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
+    + '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93a6"></path></marker></defs>';
+  for (const ed of edges) {
+    const s = nodes.get(ed.source), t = nodes.get(ed.target);
+    if (!s || !t) continue;
+    const sa = absPos(s), ta = absPos(t);
+    const ss = boxSize(s), ts = boxSize(t);
+    const g = edgeGeometry(sa, ss, ta, ts);
+    const [path, lx, ly] = XYF.getSmoothStepPath({
+      sourceX: g.sp.x, sourceY: g.sp.y, sourcePosition: g.spPos,
+      targetX: g.tp.x, targetY: g.tp.y, targetPosition: g.tpPos
+    });
+    inner += '<g class="edge-g' + (selectedEdgeId === ed.id ? " selected" : "") + '" data-id="' + esc(ed.id) + '">'
+      + '<path d="' + path + '" class="edge-hit"></path>'
+      + '<path d="' + path + '" class="edge" marker-end="url(#arrow)"></path>';
+    if (ed.label) {
+      inner += '<text x="' + lx + '" y="' + ly + '" text-anchor="middle" dominant-baseline="middle" class="elabel">' + esc(ed.label) + '</text>';
+    }
+    inner += '</g>';
+  }
+  svgEl.innerHTML = inner;
+}
+
+function renderNodes() {
+  nodesEl.innerHTML = "";
+  for (const n of treeOrder()) {
+    const a = absPos(n);
+    const s = boxSize(n);
+    const el = document.createElement("div");
+    el.className = "node"
+      + (isContainer(n) ? " container" : "")
+      + (selectedId === n.id ? " selected" : "")
+      + (groupParent === n.id ? " group" : "")
+      + (edgeSrc === n.id ? " src" : "");
+    el.style.left = a.x + "px";
+    el.style.top = a.y + "px";
+    el.style.width = s.w + "px";
+    el.style.height = s.h + "px";
+    const lab = document.createElement("div");
+    lab.className = "nlabel";
+    lab.textContent = n.label;
+    el.appendChild(lab);
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    el.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      startDrag(e, n);
+    });
+    el.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      renameNode(n);
+    });
+    nodesEl.appendChild(el);
+  }
+}
+
+function renderHint() {
+  document.getElementById("btnEdge").classList.toggle("active", mode === "edge");
+  document.getElementById("btnGroup").classList.toggle("active", mode === "group");
+  let txt = "Клик — выбрать. Drag — двигать. Двойной клик — переименовать. Delete — удалить. Клик по стрелке — выбрать её, Delete — удалить.";
+  if (mode === "edge") {
+    txt = edgeSrc
+      ? "Источник: " + nodeLabel(edgeSrc) + ". Кликните по блоку-цели."
+      : "Кликните по блоку-источнику стрелки.";
+  } else if (mode === "group") {
+    txt = groupParent
+      ? "Контейнер: " + nodeLabel(groupParent) + ". Кликните по блокам, чтобы вложить или вынуть."
+      : "Кликните по блоку, который станет контейнером.";
+  }
+  document.getElementById("hint").textContent = txt;
+}
+
+function nodeLabel(id) {
+  const n = nodes.get(id);
+  return n ? n.label : id;
+}
+
+function render() {
+  renderEdges();
+  renderNodes();
+  renderHint();
+  queueSave();
+  queueGen();
+}
+
+function startDrag(e, n) {
+  let lastX = e.clientX, lastY = e.clientY, moved = false;
+  function onMove(ev) {
+    const dx = ev.clientX - lastX, dy = ev.clientY - lastY;
+    if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) > 3) moved = true;
+    if (moved) {
+      ev.preventDefault();
+      n.x += dx / viewport.zoom;
+      n.y += dy / viewport.zoom;
+      lastX = ev.clientX; lastY = ev.clientY;
+      render();
+    }
+  }
+  function onUp() {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    if (!moved) handleNodeClick(n);
+  }
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+function handleNodeClick(n) {
+  selectedEdgeId = null;
+  if (mode === "edge") {
+    if (!edgeSrc) {
+      edgeSrc = n.id;
+      render();
+      return;
+    }
+    if (edgeSrc === n.id) {
+      edgeSrc = null;
+      render();
+      return;
+    }
+    const src = edgeSrc;
+    edgeSrc = null;
+    if (!edges.some((ed) => ed.source === src && ed.target === n.id)) {
+      const label = (prompt("Подпись стрелки (необязательно):", "") || "").trim();
+      edges.push({ id: "e" + (idCounter++), source: src, target: n.id, label });
+    }
+    render();
+    return;
+  }
+  if (mode === "group") {
+    if (!groupParent) {
+      groupParent = n.id;
+      render();
+      return;
+    }
+    if (groupParent === n.id) {
+      groupParent = null;
+      render();
+      return;
+    }
+    const par = nodes.get(groupParent);
+    const a = absPos(n);
+    const pa = absPos(par);
+    if (n.parentId === groupParent) {
+      setParent(n, null);
+      n.x = a.x;
+      n.y = a.y;
+    } else if (!isDescendant(groupParent, n.id)) {
+      setParent(n, groupParent);
+      n.x = a.x - pa.x;
+      n.y = a.y - pa.y;
+    }
+    normalizeContainer(par);
+    render();
+    return;
+  }
+  selectedId = selectedId === n.id ? null : n.id;
+  render();
+}
+
+function renameNode(n) {
+  const raw = (prompt("Новое название блока:", n.label) || "").trim();
+  if (!raw) return;
+  let id = raw, i = 2;
+  while (id !== n.id && nodes.has(id)) id = raw + "-" + (i++);
+  if (id !== n.id) {
+    const oldId = n.id;
+    nodes.delete(oldId);
+    for (const ed of edges) {
+      if (ed.source === oldId) ed.source = id;
+      if (ed.target === oldId) ed.target = id;
+    }
+    if (n.parentId && nodes.has(n.parentId)) {
+      const par = nodes.get(n.parentId);
+      const i = par.children.indexOf(oldId);
+      if (i >= 0) par.children[i] = id;
+    }
+    for (const nn of nodes.values()) if (nn.parentId === oldId) nn.parentId = id;
+    if (selectedId === oldId) selectedId = id;
+    if (edgeSrc === oldId) edgeSrc = id;
+    if (groupParent === oldId) groupParent = id;
+  }
+  n.id = id;
+  n.label = raw;
+  nodes.set(id, n);
+  render();
+}
+
+function deleteNode(id) {
+  const n = nodes.get(id);
+  if (!n) return;
+  for (const cid of n.children.slice()) {
+    const c = nodes.get(cid);
+    if (!c) continue;
+    const a = absPos(c);
+    setParent(c, null);
+    c.x = a.x;
+    c.y = a.y;
+  }
+  nodes.delete(id);
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const ed = edges[i];
+    if (ed.source === id || ed.target === id) edges.splice(i, 1);
+  }
+  if (selectedId === id) selectedId = null;
+  if (edgeSrc === id) edgeSrc = null;
+  if (groupParent === id) groupParent = null;
+  render();
+}
+
+function deleteEdge(id) {
+  const i = edges.findIndex((ed) => ed.id === id);
+  if (i < 0) return;
+  edges.splice(i, 1);
+  selectedEdgeId = null;
+  render();
+}
+
+function centerFlow() {
+  const r = pane.getBoundingClientRect();
+  return {
+    x: (r.left + r.width / 2 - viewport.x) / viewport.zoom,
+    y: (r.top + r.height / 2 - viewport.y) / viewport.zoom
+  };
+}
+
+function addBlock() {
+  const label = (prompt("Название блока:") || "").trim() || ("Блок " + (idCounter++));
+  let id = label, i = 2;
+  while (nodes.has(id)) id = label + "-" + (i++);
+  const c = centerFlow();
+  nodes.set(id, { id, label, x: c.x - 75, y: c.y - 35, w: 150, h: 70, parentId: null, children: [] });
+  selectedId = id;
+  render();
+}
+
+function fitView() {
+  const items = treeOrder();
+  if (!items.length) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of items) {
+    const a = absPos(n);
+    const s = boxSize(n);
+    minX = Math.min(minX, a.x);
+    minY = Math.min(minY, a.y);
+    maxX = Math.max(maxX, a.x + s.w);
+    maxY = Math.max(maxY, a.y + s.h);
+  }
+  const r = pane.getBoundingClientRect();
+  const vw = r.width, vh = r.height, pad = 60;
+  const bw = maxX - minX, bh = maxY - minY;
+  if (!bw || !bh) return;
+  const zoom = Math.max(0.2, Math.min(4, Math.min((vw - 2 * pad) / bw, (vh - 2 * pad) / bh, 1.5)));
+  const x = (vw - bw * zoom) / 2 - minX * zoom;
+  const y = (vh - bh * zoom) / 2 - minY * zoom;
+  panZoom.setViewport({ x, y, zoom }).then(() => applyViewport({ x, y, zoom }));
+}
+
+function toggleMode(m) {
+  if (mode === m) {
+    mode = null;
+  } else {
+    mode = m;
+  }
+  edgeSrc = null;
+  groupParent = null;
+  render();
+}
+
+function d2Key(s) {
+  const str = String(s);
+  if (/^[A-Za-z0-9_]+$/.test(str)) return str;
+  return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+function genNode(n, depth) {
+  const ind = "  ".repeat(depth);
+  const key = d2Key(n.id);
+  const kids = (n.children || []).map((id) => nodes.get(id)).filter(Boolean);
+  const props = [];
+  if (n.label !== n.id) props.push("label: " + d2Key(n.label));
+  if (kids.length || props.length) {
+    const lines = [ind + key + ": {"];
+    for (const p of props) lines.push(ind + "  " + p);
+    for (const k of kids) lines.push(...genNode(k, depth + 1));
+    lines.push(ind + "}");
+    return lines;
+  }
+  return [ind + key];
+}
+
+function nodePath(id) {
+  const path = [];
+  let n = nodes.get(id);
+  while (n) {
+    path.unshift(n.id);
+    n = n.parentId ? nodes.get(n.parentId) : null;
+  }
+  return path;
+}
+
+function generateD2() {
+  const roots = treeOrder().filter((n) => !n.parentId || !nodes.has(n.parentId));
+  const lines = [];
+  for (const r of roots) lines.push(...genNode(r, 0));
+  if (roots.length) lines.push("");
+  for (const ed of edges) {
+    const s = nodes.get(ed.source), t = nodes.get(ed.target);
+    if (!s || !t) continue;
+    const src = nodePath(ed.source).map(d2Key).join(".");
+    const tgt = nodePath(ed.target).map(d2Key).join(".");
+    let line = src + " -> " + tgt;
+    if (ed.label) line += " {label: " + d2Key(ed.label) + "}";
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+document.getElementById("btnBlock").onclick = addBlock;
+document.getElementById("btnEdge").onclick = () => toggleMode("edge");
+document.getElementById("btnGroup").onclick = () => toggleMode("group");
+document.getElementById("btnZoomIn").onclick = () => panZoom.scaleBy(1.3);
+document.getElementById("btnZoomOut").onclick = () => panZoom.scaleBy(1 / 1.3);
+document.getElementById("btnFit").onclick = fitView;
+
+document.getElementById("btnCopy").onclick = async () => {
+  const out = document.getElementById("out");
+  try {
+    await navigator.clipboard.writeText(out.value);
+  } catch (e) {
+    out.select();
+    document.execCommand("copy");
+  }
+  document.getElementById("outStatus").textContent = "Скопировано";
+  setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
+};
+
+const codePanel = document.getElementById("code-panel");
+const divider = document.getElementById("divider");
+const splitEl = document.getElementById("split");
+divider.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = codePanel.getBoundingClientRect().width;
+  const maxW = Math.max(200, splitEl.clientWidth - 320);
+  function onMove(ev) {
+    const w = Math.max(200, Math.min(maxW, startW + (ev.clientX - startX)));
+    codePanel.style.width = w + "px";
+  }
+  function onUp() {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  }
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    mode = null;
+    edgeSrc = null;
+    groupParent = null;
+    selectedEdgeId = null;
+    render();
+    return;
+  }
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+  if (e.key === "Delete" || e.key === "Backspace") {
+    if (selectedEdgeId) {
+      e.preventDefault();
+      deleteEdge(selectedEdgeId);
+    } else if (selectedId) {
+      e.preventDefault();
+      deleteNode(selectedId);
+    }
+  }
+});
+
+svgEl.addEventListener("click", (e) => {
+  const g = e.target && e.target.closest ? e.target.closest(".edge-g") : null;
+  if (!g) return;
+  e.stopPropagation();
+  selectedId = null;
+  selectedEdgeId = g.dataset.id;
+  render();
+});
+
+function clearEdgeSelection(e) {
+  if (e.target !== pane && e.target !== viewportEl) return;
+  if (selectedEdgeId) {
+    selectedEdgeId = null;
+    render();
+  }
+}
+pane.addEventListener("click", clearEdgeSelection);
+
+function seed() {
+  const N = (id, label, x, y, w, h, parentId) => {
+    const n = { id, label, x, y, w, h, parentId, children: [] };
+    nodes.set(id, n);
+    if (parentId) nodes.get(parentId).children.push(id);
+  };
+  N("Client", "Client", 60, 300, 150, 70, null);
+  N("API Server", "API Server", 340, 230, 150, 70, null);
+  N("Database", "Database", 40, 60, 150, 70, "API Server");
+  N("Cache", "Cache", 40, 170, 150, 70, "API Server");
+  N("Worker", "Worker", 340, 520, 150, 70, null);
+  edges.push({ id: "e1", source: "Client", target: "API Server", label: "HTTPS" });
+  edges.push({ id: "e2", source: "API Server", target: "Worker", label: "queue" });
+  edges.push({ id: "e3", source: "Worker", target: "Database", label: "read/write" });
+}
+
+const restored = loadState();
+if (!restored) seed();
+applyViewport(viewport);
+render();
+requestAnimationFrame(() => {
+  if (!restored) fitView();
+});
+</script>
+</body>
+</html>
