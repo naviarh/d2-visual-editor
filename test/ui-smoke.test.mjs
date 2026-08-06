@@ -104,14 +104,14 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
 
     // rename on an annotated line -> merge keeps position, text not clobbered
     const renamed = (await text(page))
-      .replace('Client # @d2pos 60,300', 'WebClient # @d2pos 60,300')
+      .replace('Client # @d2pos 80,492', 'WebClient # @d2pos 80,492')
       .replace('Client -> "API Server"', 'WebClient -> "API Server"');
     await setText(page, renamed);
     await waitEdit();
     const afterRename = await text(page);
-    assert.ok(afterRename.includes("WebClient # @d2pos 60,300"), "rename kept marker");
+    assert.ok(afterRename.includes("WebClient # @d2pos 80,492"), "rename kept marker");
     assert.ok(afterRename.includes('WebClient -> "API Server"'), "edge reference renamed");
-    assert.ok(afterRename.includes("@d2pos 60,300"), "position preserved");
+    assert.ok(afterRename.includes("@d2pos 80,492"), "position preserved");
     assert.equal(await page.$eval("#outStatus", (el) => el.textContent), "Синхронизировано");
 
     // insert a new block -> auto-position, order at end, status message

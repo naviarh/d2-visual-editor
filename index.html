@@ -1305,20 +1305,27 @@ function clearEdgeSelection(e) {
 }
 pane.addEventListener("click", clearEdgeSelection);
 
+const DEFAULT_SEED = [
+  "Client # @d2pos 80,492",
+  '"API Server": { # @d2pos 413,224',
+  "  Database # @d2pos 40,60",
+  "  Cache # @d2pos 40,170",
+  "}",
+  "Worker # @d2pos -15,308",
+  "",
+  'Client -> "API Server" {label: HTTPS}',
+  '"API Server" -> Worker {label: queue}',
+  'Worker -> "API Server".Database {label: "read/write"}'
+].join("\n");
+
 function seed() {
-  const N = (id, label, x, y, w, h, parentId) => {
-    const n = { id, label, x, y, w, h, parentId, children: [] };
-    nodes.set(id, n);
-    if (parentId) nodes.get(parentId).children.push(id);
-  };
-  N("Client", "Client", 60, 300, 150, 70, null);
-  N("API Server", "API Server", 340, 230, 150, 70, null);
-  N("Database", "Database", 40, 60, 150, 70, "API Server");
-  N("Cache", "Cache", 40, 170, 150, 70, "API Server");
-  N("Worker", "Worker", 340, 520, 150, 70, null);
-  edges.push({ id: "e1", source: "Client", target: "API Server", label: "HTTPS" });
-  edges.push({ id: "e2", source: "API Server", target: "Worker", label: "queue" });
-  edges.push({ id: "e3", source: "Worker", target: "Database", label: "read/write" });
+  const r = D2P.parseD2(DEFAULT_SEED);
+  if (!r.ok) throw new Error("seed parse failed: " + r.error.message);
+  nodes.clear();
+  for (const n of r.graph.nodes) nodes.set(n.id, n);
+  edges.push(...r.graph.edges);
+  order = r.graph.order.slice();
+  idCounter = r.graph.idCounter;
 }
 
 const restored = loadState();
