@@ -22,6 +22,9 @@ async function setText(page, s) {
   await page.$eval("#out", (el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); }, s);
 }
 
+// textarea input debounce is TEXT_EDIT_MS (3 s); wait past it with margin
+const waitEdit = () => new Promise((r) => setTimeout(r, 3400));
+
 async function toggle(page) {
   await page.click("#btnPos");
   await new Promise((r) => setTimeout(r, 200));
@@ -101,7 +104,7 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
       .replace('Client # @d2pos 60,300', 'WebClient # @d2pos 60,300')
       .replace('Client -> "API Server"', 'WebClient -> "API Server"');
     await setText(page, renamed);
-    await new Promise((r) => setTimeout(r, 1400));
+    await waitEdit();
     const afterRename = await text(page);
     assert.ok(afterRename.includes("WebClient # @d2pos 60,300"), "rename kept marker");
     assert.ok(afterRename.includes('WebClient -> "API Server"'), "edge reference renamed");
@@ -112,7 +115,7 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
     const inserted = afterRename.replace("Database # @d2pos 40,60",
       "Database # @d2pos 40,60\nNewBlock # @d2pos 5,5");
     await setText(page, inserted);
-    await new Promise((r) => setTimeout(r, 1400));
+    await waitEdit();
     const afterInsert = await text(page);
     assert.ok(afterInsert.includes("NewBlock"), "new block present");
     const status = await page.$eval("#outStatus", (el) => el.textContent);
@@ -123,7 +126,7 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
     // syntax error -> graph untouched, status shows error line
     const bad = (await text(page)).replace('"API Server" -> Worker', '"API Server" ->');
     await setText(page, bad);
-    await new Promise((r) => setTimeout(r, 1400));
+    await waitEdit();
     const errStatus = await page.$eval("#outStatus", (el) => el.textContent);
     assert.ok(/Ошибка D2/.test(errStatus), "error status: " + errStatus);
     const nodeCount = await page.$$eval("#nodes .node", (els) => els.length);
@@ -137,7 +140,7 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
     // fix the error, edit synchronizes again
     const good = stillAnnotated.replace('"API Server" ->', '"API Server" -> Worker');
     await setText(page, good);
-    await new Promise((r) => setTimeout(r, 1400));
+    await waitEdit();
     assert.equal(await page.$eval("#outStatus", (el) => el.textContent), "Синхронизировано");
 
     // sort by arrows: chain order stable, positions untouched, status synced

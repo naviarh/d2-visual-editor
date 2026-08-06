@@ -51,7 +51,7 @@ global.d2mod = api;
 
 ## 5. Пайплайн правки текста (не разрывать)
 
-`input` → debounce **1 c** (`TEXT_EDIT_MS`) → `onTextEdit`:
+`input` → debounce **3 c** (`TEXT_EDIT_MS`) → `onTextEdit`:
 1. `parseD2(out.value)`; ошибка → статус «Ошибка D2: строка N — …», граф и текст **не трогаются**.
 2. `mergeGraph(parsed, currentGraph(), {selectedId, selectedEdgeId})`.
 3. Для `added` — `placeNewNode(merged.graph, id, {center: centerFlow()})`.

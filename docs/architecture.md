@@ -101,7 +101,7 @@ D2-текст  ─────────────────────�
 
 ### Правка текста (левая панель)
 
-`input` → debounce `TEXT_EDIT_MS` (1 c) → `onTextEdit`:
+`input` → debounce `TEXT_EDIT_MS` (3 c) → `onTextEdit`:
 
 1. `parseD2(out.value)`; при ошибке — статус «Ошибка D2: строка N — …», граф и текст **не трогаются**.
 2. `mergeGraph(parsed, currentGraph(), { selectedId, selectedEdgeId })`.
