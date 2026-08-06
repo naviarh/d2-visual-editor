@@ -15,6 +15,7 @@
   .flowbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     padding: 6px 12px; background: #eef0f3; border-bottom: 1px solid #dfe2e8;
+    position: relative; z-index: 20;
   }
   button {
     padding: 6px 12px; border: 1px solid #c9cdd6; border-radius: 6px;
@@ -27,7 +28,7 @@
   .sep { width: 1px; height: 20px; background: #dfe2e8; }
   #hint { margin-left: auto; color: #667085; font-size: 13px; }
   #flow { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: #fbfbfd; }
-  #pane { flex: 1; min-height: 0; position: relative; touch-action: none; }
+  #pane { flex: 1; min-height: 0; position: relative; touch-action: none; overflow: hidden; }
   #viewport { position: absolute; inset: 0; transform-origin: 0 0; }
   #edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; z-index: 10; pointer-events: none; }
   .edge { stroke: #8a93a6; stroke-width: 2; fill: none; }
@@ -55,6 +56,26 @@
   #outStatus { color: #2f9e44; }
   #out { flex: 1; min-height: 0; width: 100%; border: none; outline: none; resize: none; padding: 10px 12px;
          background: #f6f8fa; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; user-select: text; }
+  #modal-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(15, 23, 42, 0.35);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #modal-overlay[hidden] { display: none; }
+  #modal-box {
+    width: 340px; max-width: calc(100vw - 40px);
+    background: #fff; border: 2px solid #7a8699; border-radius: 8px;
+    box-shadow: 0 8px 30px rgba(15, 23, 42, 0.25); padding: 16px;
+  }
+  #modal-title { margin: 0 0 10px; font-size: 14px; font-weight: 700; color: #1f2430; cursor: move;
+                 padding: 6px 4px; margin: -6px -4px 4px; user-select: none; touch-action: none; }
+  #modal-input {
+    width: 100%; padding: 8px 10px; margin-bottom: 14px;
+    border: 1px solid #c9cdd6; border-radius: 6px;
+    font-size: 14px; color: #1f2430; background: #fff; outline: none; user-select: text;
+  }
+  #modal-input:focus { border-color: #2f6fed; box-shadow: 0 0 0 3px rgba(47,111,237,.2); }
+  #modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
 </head>
 <body>
@@ -87,6 +108,17 @@
   </div>
 </div>
 
+<div id="modal-overlay" hidden>
+  <div id="modal-box">
+    <div id="modal-title"></div>
+    <input id="modal-input" type="text" spellcheck="false"/>
+    <div id="modal-actions">
+      <button id="modal-cancel">Отмена</button>
+      <button id="modal-ok" class="primary">OK</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/@xyflow/system/dist/umd/index.js"></script>
 <script src="js/d2-serialize.js"></script>
 <script src="js/d2-parse.js"></script>
@@ -106,6 +138,34 @@ const pane = document.getElementById("pane");
 const viewportEl = document.getElementById("viewport");
 const nodesEl = document.getElementById("nodes");
 const svgEl = document.getElementById("edges");
+const modalOverlay = document.getElementById("modal-overlay");
+const modalBox = document.getElementById("modal-box");
+const modalTitle = document.getElementById("modal-title");
+const modalInput = document.getElementById("modal-input");
+const modalOk = document.getElementById("modal-ok");
+const modalCancel = document.getElementById("modal-cancel");
+
+modalTitle.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const rect = modalBox.getBoundingClientRect();
+  const startX = e.clientX, startY = e.clientY;
+  modalBox.style.position = "fixed";
+  modalBox.style.left = rect.left + "px";
+  modalBox.style.top = rect.top + "px";
+  modalBox.style.margin = "0";
+  const onMove = (ev) => {
+    const nx = Math.max(0, Math.min(rect.left + ev.clientX - startX, window.innerWidth - rect.width));
+    const ny = Math.max(0, Math.min(rect.top + ev.clientY - startY, window.innerHeight - rect.height));
+    modalBox.style.left = nx + "px";
+    modalBox.style.top = ny + "px";
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+});
 
 const nodes = new Map();
 const edges = [];
@@ -115,6 +175,10 @@ let selectedEdgeId = null;
 let mode = null;
 let edgeSrc = null;
 let groupParent = null;
+let lastClickId = null;
+let lastClickTime = 0;
+let lastEdgeClickId = null;
+let lastEdgeClickTime = 0;
 let idCounter = 1;
 let order = [];
 let showComments = true;
@@ -492,10 +556,6 @@ function renderNodes() {
       e.stopPropagation();
       startDrag(e, n);
     });
-    el.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      renameNode(n);
-    });
     nodesEl.appendChild(el);
   }
 }
@@ -503,7 +563,7 @@ function renderNodes() {
 function renderHint() {
   document.getElementById("btnEdge").classList.toggle("active", mode === "edge");
   document.getElementById("btnGroup").classList.toggle("active", mode === "group");
-  let txt = "Клик — выбрать. Drag — двигать. Двойной клик — переименовать. Delete — удалить. Клик по стрелке — выбрать её, Delete — удалить.";
+  let txt = "Клик — выбрать. Drag — двигать. Двойной клик по блоку — переименовать, по стрелке — подпись. Delete — удалить.";
   if (mode === "edge") {
     txt = edgeSrc
       ? "Источник: " + nodeLabel(edgeSrc) + ". Кликните по блоку-цели."
@@ -545,13 +605,26 @@ function startDrag(e, n) {
   function onUp() {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
-    if (!moved) handleNodeClick(n);
+    if (!moved) {
+      // The first click re-renders nodes (renderNodes rebuilds the DOM), so a
+      // native dblclick would never fire on the replaced element. Detect the
+      // double click manually by node id + time instead.
+      const now = Date.now();
+      const isDbl = lastClickId === n.id && now - lastClickTime < 500;
+      lastClickId = n.id;
+      lastClickTime = now;
+      if (isDbl) {
+        renameNode(n);
+      } else {
+        handleNodeClick(n);
+      }
+    }
   }
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 }
 
-function handleNodeClick(n) {
+async function handleNodeClick(n) {
   selectedEdgeId = null;
   if (mode === "edge") {
     if (!edgeSrc) {
@@ -567,7 +640,7 @@ function handleNodeClick(n) {
     const src = edgeSrc;
     edgeSrc = null;
     if (!edges.some((ed) => ed.source === src && ed.target === n.id)) {
-      const label = (prompt("Подпись стрелки (необязательно):", "") || "").trim();
+      const label = (await openEditDialog({ title: "Подпись стрелки (необязательно):", value: "" }) || "").trim();
       const id = "e" + (idCounter++);
       edges.push({ id, source: src, target: n.id, label });
       order.push(id);
@@ -606,8 +679,43 @@ function handleNodeClick(n) {
   render();
 }
 
-function renameNode(n) {
-  const raw = (prompt("Новое название блока:", n.label) || "").trim();
+function openEditDialog(opts) {
+  return new Promise((resolve) => {
+    if (modalBox.style.position === "fixed") {
+      const r = modalBox.getBoundingClientRect();
+      modalBox.style.left = Math.max(0, Math.min(parseFloat(modalBox.style.left) || r.left, window.innerWidth - r.width)) + "px";
+      modalBox.style.top = Math.max(0, Math.min(parseFloat(modalBox.style.top) || r.top, window.innerHeight - r.height)) + "px";
+    }
+    modalTitle.textContent = opts.title;
+    modalInput.value = opts.value || "";
+    modalOverlay.hidden = false;
+    modalInput.focus();
+    modalInput.select();
+    const done = (val) => {
+      modalOverlay.hidden = true;
+      modalOverlay.removeEventListener("click", onOverlay);
+      modalOk.removeEventListener("click", onOk);
+      modalCancel.removeEventListener("click", onCancel);
+      modalInput.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    const onOk = () => done(modalInput.value);
+    const onCancel = () => done(null);
+    const onOverlay = (e) => { if (e.target === modalOverlay) done(null); };
+    const onKey = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") onOk();
+      else if (e.key === "Escape") onCancel();
+    };
+    modalOverlay.addEventListener("click", onOverlay);
+    modalOk.addEventListener("click", onOk);
+    modalCancel.addEventListener("click", onCancel);
+    modalInput.addEventListener("keydown", onKey);
+  });
+}
+
+async function renameNode(n) {
+  const raw = (await openEditDialog({ title: "Новое название блока:", value: n.label }) || "").trim();
   if (!raw) return;
   let id = raw, i = 2;
   while (id !== n.id && nodes.has(id)) id = raw + "-" + (i++);
@@ -632,6 +740,15 @@ function renameNode(n) {
   n.id = id;
   n.label = raw;
   nodes.set(id, n);
+  render();
+}
+
+async function renameEdge(id) {
+  const ed = edges.find((e) => e.id === id);
+  if (!ed) return;
+  const raw = (await openEditDialog({ title: "Подпись стрелки:", value: ed.label || "" }) || "").trim();
+  if (raw === ed.label) return;
+  ed.label = raw;
   render();
 }
 
@@ -675,8 +792,8 @@ function centerFlow() {
   };
 }
 
-function addBlock() {
-  const label = (prompt("Название блока:") || "").trim() || ("Блок " + (idCounter++));
+async function addBlock() {
+  const label = (await openEditDialog({ title: "Название блока:", value: "" }) || "").trim() || ("Блок " + (idCounter++));
   let id = label, i = 2;
   while (nodes.has(id)) id = label + "-" + (i++);
   const c = centerFlow();
@@ -809,9 +926,19 @@ svgEl.addEventListener("click", (e) => {
   const g = e.target && e.target.closest ? e.target.closest(".edge-g") : null;
   if (!g) return;
   e.stopPropagation();
-  selectedId = null;
-  selectedEdgeId = g.dataset.id;
-  render();
+  // Like nodes: selecting an edge re-renders the SVG (innerHTML), so a native
+  // dblclick would land on a fresh element. Detect the double click manually.
+  const now = Date.now();
+  const isDbl = lastEdgeClickId === g.dataset.id && now - lastEdgeClickTime < 500;
+  lastEdgeClickId = g.dataset.id;
+  lastEdgeClickTime = now;
+  if (isDbl) {
+    renameEdge(g.dataset.id);
+  } else {
+    selectedId = null;
+    selectedEdgeId = g.dataset.id;
+    render();
+  }
 });
 
 function clearEdgeSelection(e) {

@@ -77,7 +77,7 @@ const { parseD2 } = require("../js/d2-parse.js");
 
 - `puppeteer-core` + системный Chrome (`CHROME` env или `/usr/bin/google-chrome-stable`).
 - Страница открывается как `file://`; localStorage очищается через `evaluateOnNewDocument`.
-- `prompt()`/`confirm()` закрываются обработчиком `page.on("dialog", d => d.accept(...))`.
+- Нативных `prompt()`/`confirm()` в приложении нет — всё редактирование через собственный модальный диалог (`#modal-overlay`, `openEditDialog`): ждём `#modal-overlay` `visible`, заполняем `#modal-input` через `$eval`, закрываем кликом `#modal-ok` (или Enter).
 - Тест ждёт debounce (3 c) после `input`-события: проверяются статусы «Синхронизировано», «Новых блоков: N (авто-позиция)», «Ошибка D2: строка N — …».
 - Обязательно проверяйте отсутствие ошибок страницы (`page.on("pageerror")`).
 
@@ -100,7 +100,7 @@ const { parseD2 } = require("../js/d2-parse.js");
 - **Не поддерживается**: классы/`@`-директивы, импорты, переменные/функции/массивы, `style` как грамматика, `near`, HTML-метки. Встречается → `rawAttrs` или ошибка со строкой, но не молчаливый сброс.
 - **localStorage**: ключ `d2editor:v1`, payload `v:1`. Не переименовывать ключ без миграции. UI-предпочтения — отдельный ключ `d2editor:ui:v1` (`{codeWidth}`).
 - **`d2` CLI-тесты пропускаются** без бинаря в `PATH` — не считайте это падением.
-- **E2E в headless**: `prompt()` без обработчика диалогов зависает — всегда вешайте `page.on("dialog")`.
+- **E2E в headless**: вместо нативных `prompt()`/`alert()` приложение использует собственный модальный диалог `#modal-overlay` — тест заполняет `#modal-input` и жмёт `#modal-ok`.
 
 ## 6. Порядок работы
 

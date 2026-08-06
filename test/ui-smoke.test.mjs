@@ -203,6 +203,133 @@ test("code panel width is saved on divider drag and restored on reload", { timeo
   }
 });
 
+test("UI E2E: double-click on a block renames it (modal)", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const box = await page.$eval("#nodes .node", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+
+    // the first click re-renders the node element; double-click must still rename
+    await page.mouse.click(box.x, box.y, { clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 60));
+    await page.mouse.click(box.x, box.y, { clickCount: 2 });
+
+    await page.waitForSelector("#modal-overlay", { visible: true, timeout: 3000 });
+    assert.equal(await page.$eval("#modal-title", (el) => el.textContent), "Новое название блока:");
+    await page.$eval("#modal-input", (el, v) => { el.value = v; }, "WebClient");
+    await page.click("#modal-ok");
+    await new Promise((r) => setTimeout(r, 1400));
+
+    const labels = await page.$$eval("#nodes .node .nlabel", (els) => els.map((e) => e.textContent));
+    assert.ok(labels.includes("WebClient"), "node renamed in diagram");
+    assert.ok((await text(page)).includes("WebClient"), "node renamed in code");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: double-click on an edge edits its label (modal)", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const box = await page.$eval("#edges .edge-hit", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+
+    // the first click re-renders the SVG; the double click must still rename
+    await page.mouse.click(box.x, box.y, { clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 80));
+    await page.mouse.click(box.x, box.y, { clickCount: 2 });
+
+    await page.waitForSelector("#modal-overlay", { visible: true, timeout: 3000 });
+    assert.equal(await page.$eval("#modal-title", (el) => el.textContent), "Подпись стрелки:");
+    await page.$eval("#modal-input", (el, v) => { el.value = v; }, "HTTPS 2");
+    await page.click("#modal-ok");
+    await new Promise((r) => setTimeout(r, 1400));
+
+    assert.ok((await text(page)).includes("HTTPS 2"), "edge label renamed in code");
+    const edgeLabels = await page.$$eval("#edges .elabel", (els) => els.map((e) => e.textContent));
+    assert.ok(edgeLabels.includes("HTTPS 2"), "edge label renamed in diagram");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: edit modal is draggable by its title", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const box = await page.$eval("#nodes .node", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(box.x, box.y, { clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 60));
+    await page.mouse.click(box.x, box.y, { clickCount: 2 });
+    await page.waitForSelector("#modal-overlay", { visible: true, timeout: 3000 });
+
+    const before = await page.$eval("#modal-box", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y };
+    });
+    const title = await page.$eval("#modal-title", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.move(title.x, title.y);
+    await page.mouse.down();
+    await page.mouse.move(title.x + 120, title.y + 90, { steps: 10 });
+    await page.mouse.up();
+    await new Promise((r) => setTimeout(r, 150));
+
+    const after = await page.$eval("#modal-box", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y };
+    });
+    assert.ok(Math.abs(after.x - before.x - 120) < 3 && Math.abs(after.y - before.y - 90) < 3,
+      "modal moved with the pointer by the drag delta");
+
+    await page.click("#modal-cancel");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: diagram content stays below the flowbar when panning", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const barBottom = await page.$eval(".flowbar", (el) => el.getBoundingClientRect().bottom);
+
+    // pan: drag empty pane area upward so diagram content would slide over the bar
+    await page.mouse.move(900, 400);
+    await page.mouse.down();
+    await page.mouse.move(900, 150, { steps: 10 });
+    await page.mouse.up();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const hit = await page.evaluate((y) => {
+      const el = document.elementFromPoint(640, y);
+      return {
+        isFlowbar: !!(el && el.closest && el.closest(".flowbar")),
+        isDiagram: !!(el && el.closest && (el.closest("#nodes") || el.closest("#edges")))
+      };
+    }, barBottom - 8);
+    assert.equal(hit.isFlowbar, true, "flowbar receives the pointer at its bottom edge");
+    assert.equal(hit.isDiagram, false, "diagram does not cover the flowbar");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("moving an edge line inside its container does not freeze the page (no duplicate ids)", { timeout: 60000 }, async (t) => {
   const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
   try {
