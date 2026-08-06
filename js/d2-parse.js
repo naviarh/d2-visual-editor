@@ -108,6 +108,7 @@
       idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
     };
     var nodesByPath = new Map();
+    var nodeById = new Map();
     var edgesByTriple = new Map();
     var orderSet = new Set();
     var scopeStack = [null];
@@ -153,10 +154,21 @@
         _path: fullPath
       };
       nodesByPath.set(fullPath, n);
+      nodeById.set(localId, n);
       graph.nodes.push(n);
       addToOrder(localId);
       if (parentNode && parentNode.children.indexOf(localId) < 0) parentNode.children.push(localId);
       return n;
+    }
+
+    // is `anc` the same node as `node` or one of its parents?
+    function isAncestorNode(anc, node) {
+      var n = node, guard = 0;
+      while (n && guard++ < 1000) {
+        if (n === anc) return true;
+        n = n.parentId ? nodeById.get(n.parentId) : null;
+      }
+      return false;
     }
 
     function expandSeg(t, full) {
@@ -170,10 +182,25 @@
       var full = curScope() ? curScope()._path : "";
       var cur = curScope();
       for (var ti = 0; ti < pathTokens.length; ti++) {
-        var exp = expandSeg(pathTokens[ti], full);
+        var t = pathTokens[ti];
+        var exp = expandSeg(t, full);
         for (var pi = 0; pi < exp.length; pi++) {
           var seg = exp[pi];
           full = full ? full + "." + seg : seg;
+          var ex = nodesByPath.get(full);
+          if (ex) { cur = ex; continue; }
+          var clash = nodeById.get(seg);
+          if (clash && isAncestorNode(clash, cur)) {
+            // a path inside a scope re-referencing its own ancestor (e.g. the
+            // edge "Группа 1".789 written inside "Группа 1") resolves back to
+            // the existing node instead of creating a duplicate id
+            cur = clash;
+            full = clash._path;
+            continue;
+          }
+          if (clash) {
+            errorAt(t, "дубликат имени узла '" + seg + "': имена узлов должны быть уникальны");
+          }
           cur = ensureNode(seg, cur, full);
         }
       }

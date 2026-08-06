@@ -24,7 +24,8 @@
   function nodePath(byId, id) {
     var path = [];
     var n = byId.get(id);
-    while (n) {
+    var guard = 0;
+    while (n && guard++ < 1000) {
       path.unshift(n.id);
       n = n.parentId ? byId.get(n.parentId) : null;
     }

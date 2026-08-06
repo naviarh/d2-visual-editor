@@ -408,3 +408,34 @@ test("d2 CLI: parsed round-trips (clean and annotated) compile to identical stru
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("edge referencing its own container, written inside it, resolves to existing nodes (no duplicates)", () => {
+  const r = parseD2('"Группа 1": {\n'
+    + '  "подгруппа 1": {\n    456\n  }\n'
+    + '  789\n'
+    + '  "Группа 1".789 -> "Группа 1"."подгруппа 1".456\n'
+    + '}\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const g = r.graph;
+  const ids = g.nodes.map((n) => n.id);
+  assert.equal(new Set(ids).size, ids.length, "no duplicate node ids");
+  assert.equal(g.nodes.length, 4);
+  assert.equal(g.edges.length, 1);
+  assert.equal(g.edges[0].source, "789");
+  assert.equal(g.edges[0].target, "456");
+  const g1 = g.nodes.find((n) => n.id === "Группа 1");
+  assert.equal(g1.parentId, null, "container stays top-level");
+});
+
+test("same node name in sibling scopes is a parse error, not a corrupt graph", () => {
+  const r = parseD2("a: { x }\nb: { x }\n");
+  assert.ok(!r.ok, "expected duplicate-name error");
+  assert.ok(/дубликат имени узла/.test(r.error.message), r.error.message);
+  assert.equal(r.error.line, 2, "error points at the duplicate declaration");
+});
+
+test("same local name on both sides of an edge is a parse error, not a corrupt graph", () => {
+  const r = parseD2("a.x -> b.x\n");
+  assert.ok(!r.ok, "expected duplicate-name error");
+  assert.ok(/дубликат имени узла 'x'/.test(r.error.message), r.error.message);
+});

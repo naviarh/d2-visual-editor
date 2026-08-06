@@ -167,3 +167,84 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
     await browser.close();
   }
 });
+
+test("code panel width is saved on divider drag and restored on reload", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.goto(URL);
+    await page.waitForSelector("#out");
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    await page.waitForSelector("#out");
+
+    const width = () => page.$eval("#code-panel", (el) => Math.round(el.getBoundingClientRect().width));
+    const before = await width();
+
+    const divider = await page.$("#divider");
+    const box = await divider.boundingBox();
+    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 120, cy, { steps: 8 });
+    await page.mouse.up();
+    const after = await width();
+    assert.ok(after > before + 50, "divider drag widened the code panel");
+
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("d2editor:ui:v1")));
+    assert.ok(saved && Math.round(saved.codeWidth) === after, "width persisted to localStorage");
+
+    await page.reload();
+    await page.waitForSelector("#out");
+    assert.equal(await width(), after, "width restored after reload");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("moving an edge line inside its container does not freeze the page (no duplicate ids)", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.goto(URL);
+    await page.waitForSelector("#out");
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    await page.waitForSelector("#out");
+
+    const scenario = '"Группа 1": { # @d2pos 300,100\n'
+      + '  "подгруппа 1": { # @d2pos 30,30\n'
+      + '    456 # @d2pos 20,20\n'
+      + '  }\n'
+      + '  789 # @d2pos 20,110\n'
+      + '}\n'
+      + '\n'
+      + '"Группа 1".789 -> "Группа 1"."подгруппа 1".456\n';
+    await setText(page, scenario);
+    await waitEdit();
+    assert.ok(/Новых блоков/.test(await page.$eval("#outStatus", (el) => el.textContent)), "scenario applied");
+
+    // move the edge line inside the "Группа 1" block scope
+    const live = await text(page);
+    const edge = '"Группа 1".789 -> "Группа 1"."подгруппа 1".456';
+    const moved = live.replace("\n}\n\n" + edge, "\n  " + edge + "\n}");
+    assert.notEqual(moved, live, "edge moved inside the container");
+    await setText(page, moved);
+
+    // if the page had frozen, this evaluate would never resolve and the test would time out
+    await waitEdit();
+    const status = await page.$eval("#outStatus", (el) => el.textContent);
+    assert.equal(status, "Синхронизировано", "moved edge is a rename-free sync, not a hang");
+
+    const nodeCount = await page.$$eval("#nodes .node", (els) => els.length);
+    assert.equal(nodeCount, 4, "still the 4 original nodes, no duplicates rendered");
+
+    const finalText = await text(page);
+    assert.equal((finalText.match(/"Группа 1": \{/g) || []).length, 1, "container declared once, no nested duplicate");
+    assert.ok(finalText.includes("  " + edge), "edge stays inside the container scope");
+  } finally {
+    await browser.close();
+  }
+});

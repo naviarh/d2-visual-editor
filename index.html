@@ -12,9 +12,9 @@
     display: flex; flex-direction: column; height: 100vh; overflow: hidden;
     color: #1f2430; user-select: none;
   }
-  #toolbar {
+  .flowbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 8px 12px; background: #f6f7f9; border-bottom: 1px solid #dfe2e8;
+    padding: 6px 12px; background: #eef0f3; border-bottom: 1px solid #dfe2e8;
   }
   button {
     padding: 6px 12px; border: 1px solid #c9cdd6; border-radius: 6px;
@@ -26,14 +26,14 @@
   button.primary:hover { background: #2459c9; }
   .sep { width: 1px; height: 20px; background: #dfe2e8; }
   #hint { margin-left: auto; color: #667085; font-size: 13px; }
-  #flow { flex: 1; min-width: 0; position: relative; overflow: hidden; background: #fbfbfd; }
-  #pane { position: absolute; inset: 0; touch-action: none; }
+  #flow { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: #fbfbfd; }
+  #pane { flex: 1; min-height: 0; position: relative; touch-action: none; }
   #viewport { position: absolute; inset: 0; transform-origin: 0 0; }
   #edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; z-index: 10; pointer-events: none; }
   .edge { stroke: #8a93a6; stroke-width: 2; fill: none; }
   .edge-hit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
   .edge-g.selected .edge { stroke: #2f6fed; stroke-width: 3; }
-  .elabel { fill: #1f2430; font: 12px system-ui; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+  .elabel { fill: #1f2430; font: 15px system-ui; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
   #nodes { position: absolute; left: 0; top: 0; }
   .node {
     position: absolute; border: 2px solid #7a8699; border-radius: 8px;
@@ -42,16 +42,16 @@
   }
   .node.selected { border-color: #2f6fed; box-shadow: 0 0 0 3px rgba(47,111,237,.25); z-index: 5; }
   .node.container { border-style: dashed; background: rgba(242, 246, 255, 0.5); align-items: flex-start; justify-content: flex-start; }
-  .node.container .nlabel { position: absolute; top: 4px; left: 8px; font-size: 12px; font-weight: 700; color: #3b5fbd; }
+  .node.container .nlabel { position: absolute; top: 4px; left: 8px; font-size: 18px; font-weight: 700; color: #3b5fbd; }
   .node.group { outline: 3px solid #e8b51e; outline-offset: 3px; }
   .node.src { border-color: #2f9e44; box-shadow: 0 0 0 3px rgba(47,158,68,.25); }
-  .nlabel { font-size: 14px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; }
+  .nlabel { font-size: 18px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; }
   #split { flex: 1; display: flex; min-height: 0; }
   #code-panel { width: 33.333%; min-width: 200px; display: flex; flex-direction: column; border-right: 1px solid #dfe2e8; }
   #divider { flex: 0 0 6px; cursor: col-resize; background: #e6e8ee; }
   #divider:hover, #divider:active { background: #c9cdd6; }
   .outbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #eef0f3; font-size: 13px; }
-  .outbar #btnCopy { margin-left: auto; }
+  .outbar #outStatus { margin-left: auto; }
   #outStatus { color: #2f9e44; }
   #out { flex: 1; min-height: 0; width: 100%; border: none; outline: none; resize: none; padding: 10px 12px;
          background: #f6f8fa; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; user-select: text; }
@@ -59,28 +59,25 @@
 </head>
 <body>
 
-<div id="toolbar">
-  <button id="btnBlock">+ Блок</button>
-  <button id="btnEdge">Стрелка</button>
-  <button id="btnGroup">Группировать</button>
-  <span class="sep"></span>
-  <button id="btnSort">Упорядочить по связям</button>
-  <span class="sep"></span>
-  <button id="btnPos">Скрыть позиции</button>
-  <span class="sep"></span>
-  <button id="btnZoomIn">+</button>
-  <button id="btnZoomOut">−</button>
-  <button id="btnFit">Fit</button>
-  <span id="hint"></span>
-</div>
-
 <div id="split">
   <div id="code-panel">
-    <div class="outbar"><b>Код D2</b><button id="btnCopy">Копировать</button><span id="outStatus"></span></div>
+    <div class="outbar"><b>Код D2</b><button id="btnCopy">Копировать</button><button id="btnPos">Скрыть позиции</button><span id="outStatus"></span></div>
     <textarea id="out" spellcheck="false" wrap="off"></textarea>
   </div>
   <div id="divider" title="Перетащите, чтобы изменить ширину"></div>
   <div id="flow">
+    <div class="flowbar"><b>Схема</b>
+      <button id="btnBlock">+ Блок</button>
+      <button id="btnEdge">Стрелка</button>
+      <button id="btnGroup">Группировать</button>
+      <span class="sep"></span>
+      <button id="btnSort">Упорядочить по связям</button>
+      <span class="sep"></span>
+      <button id="btnZoomIn">+</button>
+      <button id="btnZoomOut">−</button>
+      <button id="btnFit">Fit</button>
+      <span id="hint"></span>
+    </div>
     <div id="pane">
       <div id="viewport">
         <svg id="edges"></svg>
@@ -124,6 +121,7 @@ let showComments = true;
 let lastGraphText = "";
 
 const STORE_KEY = "d2editor:v1";
+const UI_KEY = "d2editor:ui:v1";
 const GEN_IDLE_MS = 1000;
 const TEXT_EDIT_MS = 3000;
 let saveTimer = null;
@@ -290,8 +288,8 @@ function loadState() {
 }
 
 function absPos(n) {
-  let x = n.x, y = n.y, p = n.parentId;
-  while (p && nodes.has(p)) {
+  let x = n.x, y = n.y, p = n.parentId, guard = 0;
+  while (p && nodes.has(p) && guard++ < 100) {
     const par = nodes.get(p);
     x += par.x; y += par.y;
     p = par.parentId;
@@ -304,27 +302,37 @@ function isContainer(n) {
 }
 
 function boxSize(n) {
-  if (!isContainer(n)) return { w: n.w, h: n.h };
-  const PAD = 24, HEAD = 28;
-  let w = 0, h = 0;
-  for (const id of n.children) {
-    const c = nodes.get(id);
-    if (!c) continue;
-    const s = boxSize(c);
-    w = Math.max(w, c.x + s.w);
-    h = Math.max(h, c.y + s.h);
+  const memo = new Set();
+  function measure(x) {
+    if (!isContainer(x)) return { w: x.w, h: x.h };
+    if (memo.has(x.id)) return { w: 0, h: 0 };
+    memo.add(x.id);
+    const PAD = 24, HEAD = 28;
+    let w = 0, h = 0;
+    for (const id of x.children) {
+      const c = nodes.get(id);
+      if (!c) continue;
+      const s = measure(c);
+      w = Math.max(w, c.x + s.w);
+      h = Math.max(h, c.y + s.h);
+    }
+    return { w: w + PAD * 2, h: h + HEAD + PAD };
   }
-  return { w: w + PAD * 2, h: h + HEAD + PAD };
+  return measure(n);
 }
 
 function treeOrder() {
   const order = [];
+  const visiting = new Set();
   const visit = (n) => {
+    if (visiting.has(n.id)) return;
+    visiting.add(n.id);
     order.push(n);
     for (const id of n.children) {
       const c = nodes.get(id);
       if (c) visit(c);
     }
+    visiting.delete(n.id);
   };
   for (const n of nodes.values()) {
     if (!n.parentId || !nodes.has(n.parentId)) visit(n);
@@ -333,8 +341,8 @@ function treeOrder() {
 }
 
 function isDescendant(ancId, nodeId) {
-  let n = nodes.get(nodeId);
-  while (n) {
+  let n = nodes.get(nodeId), guard = 0;
+  while (n && guard++ < 100) {
     if (n.id === ancId) return true;
     n = n.parentId ? nodes.get(n.parentId) : null;
   }
@@ -757,10 +765,24 @@ divider.addEventListener("pointerdown", (e) => {
   function onUp() {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
+    try {
+      localStorage.setItem(UI_KEY, JSON.stringify({ codeWidth: codePanel.getBoundingClientRect().width }));
+    } catch (e) {}
   }
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 });
+
+try {
+  const raw = localStorage.getItem(UI_KEY);
+  if (raw) {
+    const ui = JSON.parse(raw);
+    if (ui && Number.isFinite(ui.codeWidth)) {
+      const maxW = Math.max(200, splitEl.clientWidth - 320);
+      codePanel.style.width = Math.max(200, Math.min(maxW, ui.codeWidth)) + "px";
+    }
+  }
+} catch (e) {}
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

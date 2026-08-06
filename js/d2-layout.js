@@ -25,16 +25,22 @@
   }
 
   function boxSize(byId, n) {
-    if (!isContainer(n)) return { w: n.w || 150, h: n.h || 70 };
-    var w = 0, h = 0;
-    for (var i = 0; i < n.children.length; i++) {
-      var c = byId.get(n.children[i]);
-      if (!c) continue;
-      var s = boxSize(byId, c);
-      w = Math.max(w, (c.x || 0) + s.w);
-      h = Math.max(h, (c.y || 0) + s.h);
+    var memo = new Set();
+    function measure(x) {
+      if (!isContainer(x)) return { w: x.w || 150, h: x.h || 70 };
+      if (memo.has(x.id)) return { w: 0, h: 0 };
+      memo.add(x.id);
+      var w = 0, h = 0;
+      for (var i = 0; i < x.children.length; i++) {
+        var c = byId.get(x.children[i]);
+        if (!c) continue;
+        var s = measure(c);
+        w = Math.max(w, (c.x || 0) + s.w);
+        h = Math.max(h, (c.y || 0) + s.h);
+      }
+      return { w: w + PAD * 2, h: h + HEAD + PAD };
     }
-    return { w: w + PAD * 2, h: h + HEAD + PAD };
+    return measure(n);
   }
 
   function absBox(byId, n) {
