@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
+import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const EXE = process.env.CHROME || "/usr/bin/google-chrome-stable";
 const URL = "file:///mnt/Data/Documents/D2/index.html";
@@ -297,6 +300,220 @@ test("UI E2E: edit modal is draggable by its title", { timeout: 60000 }, async (
       "modal moved with the pointer by the drag delta");
 
     await page.click("#modal-cancel");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: copy split button menu — items, Escape and outside click close it", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    await page.click("#btnCopyMenu");
+    await page.waitForSelector("#copy-menu:not([hidden])", { visible: true, timeout: 3000 });
+    const acts = await page.$$eval("#copy-menu button[data-act]", (els) => els.map((e) => e.dataset.act));
+    assert.deepEqual(acts, ["paste", "replace", "import", "export"]);
+
+    await page.keyboard.press("Escape");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(await page.$eval("#copy-menu", (el) => el.hidden), "Escape closes the menu");
+
+    await page.click("#btnCopyMenu");
+    await new Promise((r) => setTimeout(r, 50));
+    await page.mouse.click(5, 5);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(await page.$eval("#copy-menu", (el) => el.hidden), "outside click closes the menu");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: replace and paste apply clipboard content", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    await page.evaluate(() => {
+      window.__clip = "ClipNode # @d2pos 5,5\n";
+      Object.defineProperty(navigator, "clipboard", {
+        value: { readText: async () => window.__clip, writeText: async () => {} },
+        configurable: true
+      });
+    });
+
+    // replace the whole code with the clipboard
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="replace"]');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok((await text(page)).includes("ClipNode"), "replace set the code from clipboard");
+    assert.ok(/Новых блоков/.test(await page.$eval("#outStatus", (el) => el.textContent)), "replace merged into graph");
+    assert.equal(await page.$$eval("#nodes .node", (els) => els.length), 1, "only the clip node in the diagram");
+
+    // paste inserts at the caret, keeping surrounding text
+    await page.evaluate(() => { window.__clip = "PasteNode # @d2pos 3,3\n"; });
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="replace"]');
+    await new Promise((r) => setTimeout(r, 200));
+    const base = await text(page);
+    const mid = Math.floor(base.length / 2);
+    await page.$eval("#out", (el, m) => { el.focus(); el.setSelectionRange(m, m); }, mid);
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="paste"]');
+    await new Promise((r) => setTimeout(r, 200));
+    const after = await text(page);
+    assert.ok(after.length > base.length, "paste inserted text");
+    assert.ok(after.includes("PasteNode"), "paste inserted the clipboard fragment");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: import reads a .d2 file and replaces the code", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    const file = join(tmpdir(), "d2editor-e2e-import.d2");
+    fs.writeFileSync(file, "FromFileNode # @d2pos 9,9\nFromFileNode2 -> FromFileNode\n");
+
+    await page.click("#btnCopyMenu");
+    const [chooser] = await Promise.all([
+      page.waitForFileChooser({ timeout: 5000 }),
+      page.click('#copy-menu button[data-act="import"]')
+    ]);
+    await chooser.accept([file]);
+    await new Promise((r) => setTimeout(r, 300));
+
+    assert.ok((await text(page)).includes("FromFileNode"), "import loaded the file content");
+    assert.equal(await page.$$eval("#nodes .node", (els) => els.length), 2, "file nodes rendered");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: export opens the native save dialog and writes the file", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    await page.evaluate(() => {
+      window.__exported = null;
+      window.__suggested = null;
+      window.__pickerTypes = null;
+      window.showSaveFilePicker = async (opts) => {
+        window.__suggested = opts.suggestedName;
+        window.__pickerTypes = opts.types;
+        return {
+          name: opts.suggestedName,
+          createWritable: async () => ({
+            write: async (c) => { window.__exported = c; },
+            close: async () => {}
+          })
+        };
+      };
+    });
+
+    const before = await text(page);
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="export"]');
+    await new Promise((r) => setTimeout(r, 200));
+
+    const ex = await page.evaluate(() => ({
+      suggested: window.__suggested,
+      content: window.__exported,
+      status: document.getElementById("outStatus").textContent,
+      pickerAccept: window.__pickerTypes && window.__pickerTypes[0] && window.__pickerTypes[0].accept
+    }));
+    assert.equal(ex.suggested, "diagram.d2", "save dialog suggests diagram.d2");
+    assert.equal(ex.content, before, "export wrote the current code");
+    assert.ok(/Экспортировано в diagram\.d2/.test(ex.status), "status reports the export");
+    assert.ok(ex.pickerAccept && !("text/plain" in ex.pickerAccept), "picker filter no longer uses text/plain");
+    assert.deepEqual(ex.pickerAccept && ex.pickerAccept["application/x-d2"], [".d2"], "picker requests only the .d2 extension");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: export forces the .d2 extension and remembers the filename", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    // simulate the user typing "myfile" (no extension) in the save dialog
+    const stubPicker = () => page.evaluate(() => {
+      window.__suggested = null;
+      window.showSaveFilePicker = async (opts) => {
+        window.__suggested = opts.suggestedName;
+        const handle = {
+          name: "myfile",
+          move: async (n) => { handle.name = n; },
+          createWritable: async () => ({
+            write: async () => {},
+            close: async () => {}
+          })
+        };
+        return handle;
+      };
+    });
+    await stubPicker();
+
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="export"]');
+    await new Promise((r) => setTimeout(r, 200));
+    const status = await page.$eval("#outStatus", (el) => el.textContent);
+    assert.ok(/Экспортировано в myfile\.d2/.test(status), ".d2 enforced in status: " + status);
+    assert.equal(await page.evaluate(() => window.__suggested), "diagram.d2", "first export suggests diagram.d2");
+
+    // next export suggests the remembered name
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="export"]');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await page.evaluate(() => window.__suggested), "myfile.d2", "remembered name suggested next time");
+
+    // persisted to localStorage
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("d2editor:ui:v1")));
+    assert.equal(saved && saved.exportName, "myfile.d2", "exportName persisted to ui prefs");
+
+    // restored on a fresh page that shares localStorage (no clear)
+    const page2 = await browser.newPage();
+    await page2.goto(URL);
+    await page2.waitForSelector("#out");
+    await page2.evaluate(() => {
+      window.__suggested = null;
+      window.showSaveFilePicker = async (opts) => {
+        window.__suggested = opts.suggestedName;
+        return { name: opts.suggestedName, createWritable: async () => ({ write: async () => {}, close: async () => {} }) };
+      };
+    });
+    await page2.click("#btnCopyMenu");
+    await page2.click('#copy-menu button[data-act="export"]');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await page2.evaluate(() => window.__suggested), "myfile.d2", "name restored from localStorage");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: export falls back to a diagram.d2 download without the save picker", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    await page.evaluate(() => {
+      window.__exported = null;
+      window.__blob = null;
+      window.showSaveFilePicker = undefined;
+      URL.createObjectURL = (b) => { window.__blob = b; return "blob:stub"; };
+      HTMLAnchorElement.prototype.click = function () { window.__exported = { download: this.download }; };
+    });
+
+    const before = await text(page);
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="export"]');
+    await new Promise((r) => setTimeout(r, 200));
+
+    const ex = await page.evaluate(async () => ({
+      download: window.__exported && window.__exported.download,
+      content: window.__blob ? await window.__blob.text() : null
+    }));
+    assert.equal(ex.download, "diagram.d2", "fallback export filename");
+    assert.equal(ex.content, before, "fallback export contains the current code");
   } finally {
     await browser.close();
   }

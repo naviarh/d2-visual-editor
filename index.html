@@ -53,6 +53,23 @@
   #divider:hover, #divider:active { background: #c9cdd6; }
   .outbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #eef0f3; font-size: 13px; }
   .outbar #outStatus { margin-left: auto; }
+  .splitbtn { display: inline-flex; position: relative; }
+  .splitbtn button { border-radius: 0; }
+  .splitbtn #btnCopy { border-radius: 6px 0 0 6px; border-right: none; }
+  .splitbtn #btnCopyMenu { border-radius: 0 6px 6px 0; min-width: 38px; padding: 6px 10px; font-size: 12px; line-height: 1.2; }
+  #copy-menu {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+    min-width: 200px; padding: 4px; background: #fff;
+    border: 1px solid #c9cdd6; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+    display: flex; flex-direction: column;
+  }
+  #copy-menu[hidden] { display: none; }
+  #copy-menu button {
+    text-align: left; border: none; background: transparent; border-radius: 6px;
+    padding: 8px 10px; font-size: 13px; color: #1f2430;
+  }
+  #copy-menu button:hover { background: #f0f2f5; }
   #outStatus { color: #2f9e44; }
   #out { flex: 1; min-height: 0; width: 100%; border: none; outline: none; resize: none; padding: 10px 12px;
          background: #f6f8fa; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; user-select: text; }
@@ -82,7 +99,20 @@
 
 <div id="split">
   <div id="code-panel">
-    <div class="outbar"><b>Код D2</b><button id="btnCopy">Копировать</button><button id="btnPos">Скрыть позиции</button><span id="outStatus"></span></div>
+    <div class="outbar"><b>Код D2</b>
+      <div class="splitbtn" id="splitCopy">
+        <button id="btnCopy">Копировать</button>
+        <button id="btnCopyMenu" class="chevron" title="Дополнительные действия с кодом" aria-haspopup="menu" aria-expanded="false">▾</button>
+        <div id="copy-menu" role="menu" hidden>
+          <button role="menuitem" data-act="paste">Вставить</button>
+          <button role="menuitem" data-act="replace">Заменить</button>
+          <button role="menuitem" data-act="import">Импорт…</button>
+          <button role="menuitem" data-act="export">Экспорт…</button>
+        </div>
+      </div>
+      <button id="btnPos">Скрыть позиции</button><span id="outStatus"></span>
+    </div>
+    <input type="file" id="import-file" accept=".d2,.txt,text/plain" hidden/>
     <textarea id="out" spellcheck="false" wrap="off"></textarea>
   </div>
   <div id="divider" title="Перетащите, чтобы изменить ширину"></div>
@@ -183,6 +213,7 @@ let idCounter = 1;
 let order = [];
 let showComments = true;
 let lastGraphText = "";
+let exportName = null;
 
 const STORE_KEY = "d2editor:v1";
 const UI_KEY = "d2editor:ui:v1";
@@ -867,6 +898,140 @@ document.getElementById("btnCopy").onclick = async () => {
   setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
 };
 
+const splitCopy = document.getElementById("splitCopy");
+const btnCopyMenu = document.getElementById("btnCopyMenu");
+const copyMenu = document.getElementById("copy-menu");
+const importFile = document.getElementById("import-file");
+const outEl = document.getElementById("out");
+
+function setCopyMenu(open) {
+  copyMenu.hidden = !open;
+  btnCopyMenu.classList.toggle("active", open);
+  btnCopyMenu.setAttribute("aria-expanded", String(open));
+}
+
+btnCopyMenu.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setCopyMenu(copyMenu.hidden);
+});
+
+document.addEventListener("click", (e) => {
+  if (!copyMenu.hidden && !splitCopy.contains(e.target)) setCopyMenu(false);
+});
+
+copyMenu.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  setCopyMenu(false);
+  if (act === "paste") pasteFromClipboard();
+  else if (act === "replace") replaceFromClipboard();
+  else if (act === "import") importFile.click();
+  else if (act === "export") exportD2();
+});
+
+function applyCode(text) {
+  outEl.value = text;
+  clearTimeout(textTimer);
+  onTextEdit();
+}
+
+async function readClipboard() {
+  try {
+    return await navigator.clipboard.readText();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function pasteFromClipboard() {
+  const txt = await readClipboard();
+  if (txt == null) {
+    setStatus("Буфер обмена недоступен — используйте Ctrl+V", false);
+    return;
+  }
+  const start = outEl.selectionStart, end = outEl.selectionEnd;
+  outEl.value = outEl.value.slice(0, start) + txt + outEl.value.slice(end);
+  outEl.selectionStart = outEl.selectionEnd = start + txt.length;
+  clearTimeout(textTimer);
+  onTextEdit();
+}
+
+async function replaceFromClipboard() {
+  const txt = await readClipboard();
+  if (txt == null) {
+    setStatus("Буфер обмена недоступен — используйте Ctrl+V", false);
+    return;
+  }
+  applyCode(txt);
+}
+
+importFile.addEventListener("change", async () => {
+  const f = importFile.files && importFile.files[0];
+  importFile.value = "";
+  if (!f) return;
+  let txt;
+  try {
+    txt = await f.text();
+  } catch (e) {
+    setStatus("Не удалось прочитать файл", false);
+    return;
+  }
+  applyCode(txt);
+});
+
+async function exportD2() {
+  const content = outEl.value;
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: exportName || "diagram.d2",
+        types: [{ description: "D2-схема", accept: { "application/x-d2": [".d2"] } }],
+        excludeAcceptAllOption: true
+      });
+      let name = handle.name;
+      if (!/\.d2$/i.test(name)) {
+        const fixed = (name.replace(/\.\w+$/, "") || "diagram") + ".d2";
+        try {
+          await handle.move(fixed);
+          name = fixed;
+        } catch (e) {}
+      }
+      const writable = await handle.createWritable();
+      await writable.write(content);
+      await writable.close();
+      exportName = name;
+      saveUiPrefs({ exportName: name });
+      setStatus("Экспортировано в " + name, true);
+      setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
+      return;
+    } catch (e) {
+      if (e.name !== "AbortError") setStatus("Не удалось экспортировать файл", false);
+      return;
+    }
+  }
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = exportName || "diagram.d2";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+  setStatus("Экспортировано в " + (exportName || "diagram.d2"), true);
+  setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
+}
+
+function saveUiPrefs(extra) {
+  try {
+    let ui = {};
+    const raw = localStorage.getItem(UI_KEY);
+    if (raw) { try { ui = JSON.parse(raw) || {}; } catch (e) {} }
+    Object.assign(ui, extra);
+    localStorage.setItem(UI_KEY, JSON.stringify(ui));
+  } catch (e) {}
+}
+
 const codePanel = document.getElementById("code-panel");
 const divider = document.getElementById("divider");
 const splitEl = document.getElementById("split");
@@ -882,9 +1047,7 @@ divider.addEventListener("pointerdown", (e) => {
   function onUp() {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
-    try {
-      localStorage.setItem(UI_KEY, JSON.stringify({ codeWidth: codePanel.getBoundingClientRect().width }));
-    } catch (e) {}
+    saveUiPrefs({ codeWidth: codePanel.getBoundingClientRect().width });
   }
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
@@ -898,6 +1061,7 @@ try {
       const maxW = Math.max(200, splitEl.clientWidth - 320);
       codePanel.style.width = Math.max(200, Math.min(maxW, ui.codeWidth)) + "px";
     }
+    if (ui && typeof ui.exportName === "string") exportName = ui.exportName;
   }
 } catch (e) {}
 
@@ -907,6 +1071,7 @@ window.addEventListener("keydown", (e) => {
     edgeSrc = null;
     groupParent = null;
     selectedEdgeId = null;
+    setCopyMenu(false);
     render();
     return;
   }
