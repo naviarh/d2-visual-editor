@@ -121,6 +121,15 @@ Drag, добавить блок, стрелка, группа, delete, rename �
 
 `queueSave` → `saveState` пишет `{v:1, nodes, edges, idCounter, viewport, order, showComments}` в `localStorage["d2editor:v1"]`. Загрузка: `loadState` → при отсутствии `order` строится `defaultOrder` (миграция v1 → v2). Сборка мусора: `syncOrder()` убирает id удалённых нод/рёбер и дописывает недостающие.
 
+### Экспорт и импорт файлов
+
+Split-button «Копировать» (шеврон `#btnCopyMenu`) открывает меню `#copy-menu`:
+
+- **Экспорт D2** (`exportD2`): текущий текст textarea → нативный диалог `showSaveFilePicker` (фолбэк `Blob` + `a[download]`). Расширение `.d2` принудительное (`handle.move`), имя запоминается в `localStorage["d2editor:ui:v1"]` (`exportName`) и подставляется как `suggestedName` в следующий раз.
+- **Импорт D2** (`#import-file`, `.d2`/`.txt`): текст применяется через `applyCode` — без 3-секундного debounce, сразу `onTextEdit`.
+- **Экспорт SVG** (`exportSVG`/`buildSVG`): самодостаточный векторный документ, генерируется прямо из графа (позиции `absPos`, размеры `boxSize`, рёбра `edgeGeometry` + `XYF.getSmoothStepPath`), без `foreignObject` и внешних ресурсов. Слои: фон контейнеров → фоны блоков → рёбра + подписи рёбер → подписи блоков (стрелки внутри групп не перекрываются заливкой).
+- **В плане**: `export-drawio` (mxGraphModel XML), `export-mermaid`/`import-mermaid` — пункты меню-стабы со статусом «… — в разработке».
+
 ## 8. Упорядочение по стрелкам (`d2-sort.js`)
 
 `sortByArrows(graph)` → новый граф с переставленными `order` (ноды) и `children` каждого контейнера; вход не мутирует.

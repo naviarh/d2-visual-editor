@@ -9,7 +9,8 @@
 - `js/*.js` — логика графа, вынесена в **ES5 UMD-модули** (браузер + CommonJS). Не используют DOM.
 - **Граф — источник истины** для хранения и структуры. **D2-текст — проекция графа** (два сериализатора: чистый и аннотированный). Правки текста сливаются в граф через merge-слой, который переносит позиции.
 - Хранилище: `localStorage["d2editor:v1"]` (payload `v:1`, legacy-совместимо). **Не переименовывайте ключ** без миграции. UI-предпочтения — отдельно, `localStorage["d2editor:ui:v1"]` (`{codeWidth, exportName}` — ширина панели кода и запомненное имя файла экспорта).
-- Тесты: `node:test`, 105 зелёных (`npm test`), E2E на puppeteer-core (`npm run test:ui`).
+- UI: панель «Код D2» — textarea + split-button «Копировать» с меню по шеврону (`#copy-menu`, `data-act`): `paste`/`replace`/`import`/`export`, затем `export-svg` (реализован), `export-drawio`/`export-mermaid`/`import-mermaid` (стабы «в разработке»). Панель «Схема» (@xyflow/system): + Блок, Стрелка, Группировать, Упорядочить по связям, +/−, Fit; pan/zoom, drag блоков, dblclick-rename через собственный модальный диалог.
+- Тесты: `node:test`, 106 зелёных (`npm test`), E2E на puppeteer-core — 15 сценариев (`npm run test:ui`).
 
 ## 2. Карта модулей
 
@@ -79,8 +80,8 @@ Toggle «Скрыть/Показать позиции»: переписывае�
 ## 8. Тестирование (обязательно перед завершением задачи)
 
 ```bash
-npm test          # 90 юнит-тестов (node:test), включая d2 CLI-паритет (skip, если d2 нет в PATH)
-npm run test:ui   # 2 E2E-теста puppeteer-core (нужен системный Chrome)
+npm test          # 106 юнит-тестов (node:test), включая d2 CLI-паритет (skip, если d2 нет в PATH)
+npm run test:ui   # 15 E2E-сценариев puppeteer-core (нужен системный Chrome)
 ```
 
 - Системный Chrome: по умолчанию `/usr/bin/google-chrome-stable`, переопределяется переменной `CHROME`.
