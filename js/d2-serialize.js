@@ -149,12 +149,17 @@
       var open = ind + key + ": {" + lineSuffix(n, annotated);
       lines.push(open);
       for (var p = 0; p < props.length; p++) lines.push(ind + "  " + props[p]);
-      for (var r = 0; r < raw.length; r++) lines.push(ind + "  " + raw[r]);
+      for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
       for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
       lines.push(ind + "}");
     } else {
       lines.push(ind + key + lineSuffix(n, annotated));
     }
+  }
+
+  function appendRaw(lines, ind, raw) {
+    var parts = String(raw).split("\n");
+    for (var i = 0; i < parts.length; i++) lines.push(ind + "  " + parts[i]);
   }
 
   function emitEdge(ed, byId, lines) {
@@ -167,7 +172,22 @@
     var src = nodePath(byId, ed.source).map(d2Key).join(".");
     var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
     var line = src + " -> " + tgt;
-    if (ed.label) line += " {label: " + d2Key(ed.label) + "}";
+    var attrs = [];
+    if (ed.label) attrs.push("label: " + d2Key(ed.label));
+    for (var r = 0; r < (ed.rawAttrs || []).length; r++) attrs.push(ed.rawAttrs[r]);
+    if (attrs.length === 1) {
+      line += " {" + attrs[0] + "}";
+      if (ed.trailingComment) line += " # " + ed.trailingComment;
+      lines.push(line);
+      return;
+    }
+    if (attrs.length > 1) {
+      lines.push(line + " {");
+      for (var a = 0; a < attrs.length; a++) appendRaw(lines, "", attrs[a]);
+      if (ed.trailingComment) lines.push("} # " + ed.trailingComment);
+      else lines.push("}");
+      return;
+    }
     if (ed.trailingComment) line += " # " + ed.trailingComment;
     lines.push(line);
   }
