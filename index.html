@@ -15,7 +15,7 @@
   .flowbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     padding: 6px 12px; background: #eef0f3; border-bottom: 1px solid #dfe2e8;
-    position: relative; z-index: 20;
+    position: relative; z-index: 20; font-size: 13px;
   }
   button {
     padding: 6px 12px; border: 1px solid #c9cdd6; border-radius: 6px;
@@ -65,6 +65,7 @@
     display: flex; flex-direction: column;
   }
   #copy-menu[hidden] { display: none; }
+  .menu-sep { height: 1px; margin: 4px 0; background: #dfe2e8; }
   #copy-menu button {
     text-align: left; border: none; background: transparent; border-radius: 6px;
     padding: 8px 10px; font-size: 13px; color: #1f2430;
@@ -108,6 +109,11 @@
           <button role="menuitem" data-act="replace">Заменить</button>
           <button role="menuitem" data-act="import">Импорт…</button>
           <button role="menuitem" data-act="export">Экспорт…</button>
+          <div class="menu-sep"></div>
+          <button role="menuitem" data-act="export-svg">Экспорт в SVG</button>
+          <button role="menuitem" data-act="export-drawio">Экспорт в Draw.io</button>
+          <button role="menuitem" data-act="export-mermaid">Экспорт в Mermaid</button>
+          <button role="menuitem" data-act="import-mermaid">Импорт из Mermaid</button>
         </div>
       </div>
       <button id="btnPos">Скрыть позиции</button><span id="outStatus"></span>
@@ -928,6 +934,10 @@ copyMenu.addEventListener("click", (e) => {
   else if (act === "replace") replaceFromClipboard();
   else if (act === "import") importFile.click();
   else if (act === "export") exportD2();
+  else if (act === "export-svg") exportSVG();
+  else if (act === "export-drawio") setStatus("Экспорт в Draw.io — в разработке", false);
+  else if (act === "export-mermaid") setStatus("Экспорт в Mermaid — в разработке", false);
+  else if (act === "import-mermaid") setStatus("Импорт из Mermaid — в разработке", false);
 });
 
 function applyCode(text) {
@@ -1019,6 +1029,186 @@ async function exportD2() {
   a.remove();
   URL.revokeObjectURL(a.href);
   setStatus("Экспортировано в " + (exportName || "diagram.d2"), true);
+  setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
+}
+
+const SVG_FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
+const SVG_LINE_H = 22;
+let _svgCtx = null;
+
+function svgTextCtx() {
+  if (!_svgCtx) _svgCtx = document.createElement("canvas").getContext("2d");
+  return _svgCtx;
+}
+
+function svgFontMetrics(font) {
+  const ctx = svgTextCtx();
+  ctx.font = font;
+  const m = ctx.measureText("Ág");
+  return {
+    ascent: m.actualBoundingBoxAscent || parseFloat(font) * 0.8,
+    descent: m.actualBoundingBoxDescent || parseFloat(font) * 0.2
+  };
+}
+
+function wrapLabel(text, maxWidth, font) {
+  const ctx = svgTextCtx();
+  ctx.font = font;
+  const words = String(text).split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [""];
+  const fits = (t) => ctx.measureText(t).width <= maxWidth;
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    const cand = cur ? cur + " " + w : w;
+    if (fits(cand)) { cur = cand; continue; }
+    if (cur) lines.push(cur);
+    cur = "";
+    if (fits(w)) { cur = w; continue; }
+    let rem = w;
+    while (rem.length) {
+      let lo = 1, hi = rem.length;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (fits(rem.slice(0, mid))) lo = mid; else hi = mid - 1;
+      }
+      lines.push(rem.slice(0, lo));
+      rem = rem.slice(lo);
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function buildSVG() {
+  const PAD = 40;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const addBox = (x, y, w, h) => {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+  };
+
+  const nodeList = [];
+  for (const n of treeOrder()) {
+    const a = absPos(n), s = boxSize(n);
+    nodeList.push({ n, a, s, container: isContainer(n) });
+    addBox(a.x, a.y, s.w, s.h);
+  }
+
+  const edgeList = [];
+  for (const ed of edges) {
+    const s = nodes.get(ed.source), t = nodes.get(ed.target);
+    if (!s || !t) continue;
+    const g = edgeGeometry(absPos(s), boxSize(s), absPos(t), boxSize(t));
+    const [path, lx, ly] = XYF.getSmoothStepPath({
+      sourceX: g.sp.x, sourceY: g.sp.y, sourcePosition: g.spPos,
+      targetX: g.tp.x, targetY: g.tp.y, targetPosition: g.tpPos
+    });
+    edgeList.push({ ed, path, lx, ly });
+    if (ed.label) addBox(lx - 60, ly - 12, 120, 24);
+  }
+
+  if (nodeList.length === 0 && edgeList.length === 0) addBox(0, 0, 100, 50);
+  const x0 = Math.floor(minX) - PAD, y0 = Math.floor(minY) - PAD;
+  const w = Math.ceil(maxX) - x0 + PAD, h = Math.ceil(maxY) - y0 + PAD;
+
+  let body = "";
+  // layer 1: container backgrounds (edges inside a group must stay above it)
+  for (const it of nodeList) {
+    if (!it.container) continue;
+    body += '<rect x="' + it.a.x + '" y="' + it.a.y + '" width="' + it.s.w + '" height="' + it.s.h + '" rx="8"'
+      + ' fill="#f2f6ff" fill-opacity="0.5" stroke="#7a8699" stroke-width="2" stroke-dasharray="8 5"/>';
+  }
+  // layer 2: opaque node backgrounds
+  for (const it of nodeList) {
+    if (it.container) continue;
+    body += '<rect x="' + it.a.x + '" y="' + it.a.y + '" width="' + it.s.w + '" height="' + it.s.h + '" rx="8"'
+      + ' fill="#ffffff" stroke="#7a8699" stroke-width="2"/>';
+  }
+  // layer 3: edges with labels
+  for (const it of edgeList) {
+    const t = it.ed.label != null ? esc(it.ed.label) : "";
+    body += '<path d="' + it.path + '" fill="none" stroke="#8a93a6" stroke-width="2" marker-end="url(#arrow)"/>';
+    if (t) {
+      const m = svgFontMetrics("15px " + SVG_FONT);
+      const y = it.ly + (m.ascent - m.descent) / 2;
+      const attrs = 'x="' + it.lx + '" y="' + y + '" text-anchor="middle" font-family="' + SVG_FONT + '" font-size="15"';
+      body += '<text ' + attrs + ' fill="#ffffff" stroke="#ffffff" stroke-width="3" stroke-linejoin="round">' + t + '</text>';
+      body += '<text ' + attrs + ' fill="#1f2430">' + t + '</text>';
+    }
+  }
+  // layer 4: node labels (always above edges)
+  for (const it of nodeList) {
+    const { n, a, s, container } = it;
+    const x = a.x, y = a.y;
+    const label = n.label != null ? String(n.label) : "";
+    const font = (container ? "700 " : "600 ") + "18px " + SVG_FONT;
+    const wrapMax = container ? Math.max(20, s.w - 30) : Math.max(20, s.w - 16);
+    const lines = wrapLabel(label, wrapMax, font);
+    const m = svgFontMetrics(font);
+    if (container) {
+      const startY = y + 10 + m.ascent;
+      for (let i = 0; i < lines.length; i++) {
+        body += '<text x="' + (x + 14) + '" y="' + (startY + i * SVG_LINE_H) + '" font-family="' + SVG_FONT
+          + '" font-size="18" font-weight="700" fill="#3b5fbd">' + esc(lines[i]) + '</text>';
+      }
+    } else {
+      const cx = x + s.w / 2, cy = y + s.h / 2;
+      for (let i = 0; i < lines.length; i++) {
+        const ly2 = cy + (i - (lines.length - 1) / 2) * SVG_LINE_H + (m.ascent - m.descent) / 2;
+        body += '<text x="' + cx + '" y="' + ly2 + '" text-anchor="middle" font-family="' + SVG_FONT
+          + '" font-size="18" font-weight="600" fill="#1f2430">' + esc(lines[i]) + '</text>';
+      }
+    }
+  }
+
+  return '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="' + x0 + ' ' + y0 + ' ' + w + ' ' + h + '">\n'
+    + '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
+    + '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93a6"/></marker></defs>\n'
+    + '<rect x="' + x0 + '" y="' + y0 + '" width="' + w + '" height="' + h + '" fill="#ffffff"/>\n'
+    + body
+    + '</svg>\n';
+}
+
+function svgFileName() {
+  return (exportName || "diagram").replace(/\.\w+$/, "") + ".svg";
+}
+
+function downloadBlob(content, mime, name) {
+  const blob = new Blob([content], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+async function exportSVG() {
+  const svg = buildSVG();
+  const name = svgFileName();
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "SVG-изображение", accept: { "image/svg+xml": [".svg"] } }],
+        excludeAcceptAllOption: true
+      });
+      const writable = await handle.createWritable();
+      await writable.write(svg);
+      await writable.close();
+      setStatus("Экспортировано в " + handle.name, true);
+      setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
+      return;
+    } catch (e) {
+      if (e.name !== "AbortError") setStatus("Не удалось экспортировать файл", false);
+      return;
+    }
+  }
+  downloadBlob(svg, "image/svg+xml", name);
+  setStatus("Экспортировано в " + name, true);
   setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
 }
 

@@ -313,7 +313,13 @@ test("UI E2E: copy split button menu — items, Escape and outside click close i
     await page.click("#btnCopyMenu");
     await page.waitForSelector("#copy-menu:not([hidden])", { visible: true, timeout: 3000 });
     const acts = await page.$$eval("#copy-menu button[data-act]", (els) => els.map((e) => e.dataset.act));
-    assert.deepEqual(acts, ["paste", "replace", "import", "export"]);
+    assert.deepEqual(acts, ["paste", "replace", "import", "export", "export-svg", "export-drawio", "export-mermaid", "import-mermaid"]);
+
+    // the format items are stubs for now — clicking reports "в разработке" and closes the menu
+    await page.click('#copy-menu button[data-act="export-drawio"]');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(await page.$eval("#copy-menu", (el) => el.hidden), "menu closes after picking export-drawio");
+    assert.ok(/(в разработке)/.test(await page.$eval("#outStatus", (el) => el.textContent)), "stub status shown");
 
     await page.keyboard.press("Escape");
     await new Promise((r) => setTimeout(r, 100));
@@ -514,6 +520,48 @@ test("UI E2E: export falls back to a diagram.d2 download without the save picker
     }));
     assert.equal(ex.download, "diagram.d2", "fallback export filename");
     assert.equal(ex.content, before, "fallback export contains the current code");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: export SVG produces a self-contained vector document", { timeout: 60000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    await page.evaluate(() => {
+      window.__svg = null;
+      window.showSaveFilePicker = async (opts) => ({
+        name: opts.suggestedName,
+        createWritable: async () => ({
+          write: async (c) => { window.__svg = c; },
+          close: async () => {}
+        })
+      });
+    });
+
+    await setText(page, '"Клиент" # @d2pos 60,300\n"Сервер": {\n  "База" # @d2pos 40,60\n}\n"Клиент" -> "Сервер" {label: запрос}\n"Сервер" -> "Клиент"\n');
+    await waitEdit();
+
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="export-svg"]');
+    await new Promise((r) => setTimeout(r, 200));
+
+    const svg = await page.evaluate(() => window.__svg);
+    assert.ok(svg.startsWith("<?xml"), "xml declaration present");
+    assert.ok(/<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*viewBox="[\d.-]+ [\d.-]+ [\d.-]+ [\d.-]+"/.test(svg), "svg root with xmlns and viewBox");
+    assert.ok(!/foreignObject/i.test(svg), "no foreignObject, native primitives only");
+    assert.ok(/<marker id="arrow"/.test(svg), "arrow marker defined in defs");
+    assert.ok(/marker-end="url\(#arrow\)"/.test(svg), "edge path uses the arrow marker");
+    assert.ok(svg.includes('stroke-dasharray="8 5"'), "container uses dashed border");
+    assert.ok(svg.includes('fill="#ffffff"'), "white background and node fill present");
+    assert.ok(svg.includes("Клиент") && svg.includes("Сервер") && svg.includes("База"), "node labels present");
+    assert.ok(svg.includes("запрос"), "edge label present");
+    assert.ok(!svg.includes(">null<"), "edges without a label render no text at all");
+    const dashIdx = svg.indexOf('stroke-dasharray="8 5"');
+    const edgeIdx = svg.indexOf("marker-end=");
+    assert.ok(dashIdx !== -1 && edgeIdx !== -1 && dashIdx < edgeIdx, "container background renders below edges (edges stay visible inside groups)");
+    assert.ok(svg.endsWith("</svg>\n"), "document closed");
   } finally {
     await browser.close();
   }
