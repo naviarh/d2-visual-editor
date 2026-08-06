@@ -64,6 +64,8 @@
   <button id="btnEdge">Стрелка</button>
   <button id="btnGroup">Группировать</button>
   <span class="sep"></span>
+  <button id="btnPos">Скрыть позиции</button>
+  <span class="sep"></span>
   <button id="btnZoomIn">+</button>
   <button id="btnZoomOut">−</button>
   <button id="btnFit">Fit</button>
@@ -73,7 +75,7 @@
 <div id="split">
   <div id="code-panel">
     <div class="outbar"><b>Код D2</b><button id="btnCopy">Копировать</button><span id="outStatus"></span></div>
-    <textarea id="out" readonly spellcheck="false" wrap="off"></textarea>
+    <textarea id="out" spellcheck="false" wrap="off"></textarea>
   </div>
   <div id="divider" title="Перетащите, чтобы изменить ширину"></div>
   <div id="flow">
@@ -87,10 +89,18 @@
 </div>
 
 <script src="https://unpkg.com/@xyflow/system/dist/umd/index.js"></script>
+<script src="js/d2-serialize.js"></script>
+<script src="js/d2-parse.js"></script>
+<script src="js/d2-merge.js"></script>
+<script src="js/d2-layout.js"></script>
 <script>
 "use strict";
 
 const XYF = window.XYFlowSystem;
+const D2S = window.d2mod;
+const D2P = window.d2parse;
+const D2M = window.d2merge;
+const D2L = window.d2layout;
 const pane = document.getElementById("pane");
 const viewportEl = document.getElementById("viewport");
 const nodesEl = document.getElementById("nodes");
@@ -105,17 +115,124 @@ let mode = null;
 let edgeSrc = null;
 let groupParent = null;
 let idCounter = 1;
+let order = [];
+let showComments = true;
+let lastGraphText = "";
 
 const STORE_KEY = "d2editor:v1";
 const GEN_IDLE_MS = 1000;
+const TEXT_EDIT_MS = 1000;
 let saveTimer = null;
 let genTimer = null;
+let textTimer = null;
 
 function queueGen() {
   clearTimeout(genTimer);
   genTimer = setTimeout(() => {
-    document.getElementById("out").value = generateD2();
+    const out = document.getElementById("out");
+    if (out.value === lastGraphText) regenerateTextView();
   }, GEN_IDLE_MS);
+}
+
+function currentGraph() {
+  const ns = [];
+  for (const n of nodes.values()) {
+    ns.push({
+      ...n,
+      children: (n.children || []).slice(),
+      x: n.x || 0,
+      y: n.y || 0,
+      hasPos: true,
+      comments: n.comments || [],
+      trailingComment: n.trailingComment || null,
+      rawAttrs: n.rawAttrs || []
+    });
+  }
+  const es = edges.map((e) => ({
+    ...e,
+    comments: e.comments || [],
+    trailingComment: e.trailingComment || null,
+    rawAttrs: e.rawAttrs || []
+  }));
+  return {
+    v: 2, nodes: ns, edges: es, order: order.slice(), idCounter,
+    viewport: { ...viewport }, showComments
+  };
+}
+
+function applyGraph(g) {
+  nodes.clear();
+  for (const n of g.nodes) nodes.set(n.id, n);
+  edges.length = 0;
+  edges.push(...g.edges);
+  order = g.order.slice();
+  idCounter = g.idCounter;
+}
+
+function syncOrder() {
+  const seen = new Set();
+  const keep = [];
+  for (const id of order) {
+    if (nodes.has(id)) { keep.push(id); seen.add(id); }
+  }
+  for (const n of D2S.treeOrder(currentGraph())) {
+    if (!seen.has(n.id)) { keep.push(n.id); seen.add(n.id); }
+  }
+  for (const ed of edges) {
+    if (!seen.has(ed.id)) { keep.push(ed.id); seen.add(ed.id); }
+  }
+  order = keep;
+}
+
+function regenerateTextView() {
+  const g = currentGraph();
+  const text = showComments ? D2S.serializeAnnotated(g) : D2S.serializeClean(g);
+  lastGraphText = text;
+  document.getElementById("out").value = text;
+  document.getElementById("btnPos").textContent = showComments ? "Скрыть позиции" : "Показать позиции";
+  document.getElementById("btnPos").classList.toggle("active", showComments);
+}
+
+function setStatus(text, ok) {
+  const el = document.getElementById("outStatus");
+  el.textContent = text;
+  el.style.color = ok ? "#2f9e44" : "#d6382b";
+}
+
+function togglePositions() {
+  const out = document.getElementById("out");
+  const clean = out.value === lastGraphText;
+  showComments = !showComments;
+  if (clean) regenerateTextView();
+  queueSave();
+}
+
+function onTextEdit() {
+  const out = document.getElementById("out");
+  const r = D2P.parseD2(out.value);
+  if (!r.ok) {
+    setStatus("Ошибка D2: строка " + r.error.line + " — " + r.error.message, false);
+    return;
+  }
+  const merged = D2M.mergeGraph(r.graph, currentGraph(), { selectedId, selectedEdgeId });
+  const added = merged.added;
+  const removed = merged.removed;
+  const center = centerFlow();
+  for (const id of added) D2L.placeNewNode(merged.graph, id, { center });
+  applyGraph(merged.graph);
+  selectedId = merged.selectedId;
+  selectedEdgeId = merged.selectedEdgeId;
+  renderEdges();
+  renderNodes();
+  renderHint();
+  queueSave();
+  if (added.length || removed.length) {
+    regenerateTextView();
+    setStatus(added.length ? "Новых блоков: " + added.length + " (авто-позиция)" : "Синхронизировано", true);
+  } else {
+    lastGraphText = out.value;
+    setStatus("Синхронизировано", true);
+  }
 }
 
 function queueSave() {
@@ -130,7 +247,9 @@ function saveState() {
       nodes: [...nodes.values()].map((n) => ({ ...n, children: n.children.slice() })),
       edges,
       idCounter,
-      viewport
+      viewport,
+      order,
+      showComments
     };
     localStorage.setItem(STORE_KEY, JSON.stringify(data));
   } catch (e) {
@@ -158,6 +277,8 @@ function loadState() {
     edges.push(...data.edges);
     if (Number.isFinite(data.idCounter)) idCounter = data.idCounter;
     if (data.viewport && Number.isFinite(data.viewport.x)) viewport = { ...data.viewport };
+    if (Array.isArray(data.order) && data.order.length) order = data.order;
+    if (typeof data.showComments === "boolean") showComments = data.showComments;
     return true;
   } catch (e) {
     return false;
@@ -435,7 +556,9 @@ function handleNodeClick(n) {
     edgeSrc = null;
     if (!edges.some((ed) => ed.source === src && ed.target === n.id)) {
       const label = (prompt("Подпись стрелки (необязательно):", "") || "").trim();
-      edges.push({ id: "e" + (idCounter++), source: src, target: n.id, label });
+      const id = "e" + (idCounter++);
+      edges.push({ id, source: src, target: n.id, label });
+      order.push(id);
     }
     render();
     return;
@@ -489,6 +612,7 @@ function renameNode(n) {
       if (i >= 0) par.children[i] = id;
     }
     for (const nn of nodes.values()) if (nn.parentId === oldId) nn.parentId = id;
+    order = order.map((x) => (x === oldId ? id : x));
     if (selectedId === oldId) selectedId = id;
     if (edgeSrc === oldId) edgeSrc = id;
     if (groupParent === oldId) groupParent = id;
@@ -515,6 +639,7 @@ function deleteNode(id) {
     const ed = edges[i];
     if (ed.source === id || ed.target === id) edges.splice(i, 1);
   }
+  syncOrder();
   if (selectedId === id) selectedId = null;
   if (edgeSrc === id) edgeSrc = null;
   if (groupParent === id) groupParent = null;
@@ -525,6 +650,7 @@ function deleteEdge(id) {
   const i = edges.findIndex((ed) => ed.id === id);
   if (i < 0) return;
   edges.splice(i, 1);
+  syncOrder();
   selectedEdgeId = null;
   render();
 }
@@ -543,6 +669,7 @@ function addBlock() {
   while (nodes.has(id)) id = label + "-" + (i++);
   const c = centerFlow();
   nodes.set(id, { id, label, x: c.x - 75, y: c.y - 35, w: 150, h: 70, parentId: null, children: [] });
+  order.push(id);
   selectedId = id;
   render();
 }
@@ -580,61 +707,17 @@ function toggleMode(m) {
   render();
 }
 
-function d2Key(s) {
-  const str = String(s);
-  if (/^[A-Za-z0-9_]+$/.test(str)) return str;
-  return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
-}
-
-function genNode(n, depth) {
-  const ind = "  ".repeat(depth);
-  const key = d2Key(n.id);
-  const kids = (n.children || []).map((id) => nodes.get(id)).filter(Boolean);
-  const props = [];
-  if (n.label !== n.id) props.push("label: " + d2Key(n.label));
-  if (kids.length || props.length) {
-    const lines = [ind + key + ": {"];
-    for (const p of props) lines.push(ind + "  " + p);
-    for (const k of kids) lines.push(...genNode(k, depth + 1));
-    lines.push(ind + "}");
-    return lines;
-  }
-  return [ind + key];
-}
-
-function nodePath(id) {
-  const path = [];
-  let n = nodes.get(id);
-  while (n) {
-    path.unshift(n.id);
-    n = n.parentId ? nodes.get(n.parentId) : null;
-  }
-  return path;
-}
-
-function generateD2() {
-  const roots = treeOrder().filter((n) => !n.parentId || !nodes.has(n.parentId));
-  const lines = [];
-  for (const r of roots) lines.push(...genNode(r, 0));
-  if (roots.length) lines.push("");
-  for (const ed of edges) {
-    const s = nodes.get(ed.source), t = nodes.get(ed.target);
-    if (!s || !t) continue;
-    const src = nodePath(ed.source).map(d2Key).join(".");
-    const tgt = nodePath(ed.target).map(d2Key).join(".");
-    let line = src + " -> " + tgt;
-    if (ed.label) line += " {label: " + d2Key(ed.label) + "}";
-    lines.push(line);
-  }
-  return lines.join("\n");
-}
-
 document.getElementById("btnBlock").onclick = addBlock;
 document.getElementById("btnEdge").onclick = () => toggleMode("edge");
 document.getElementById("btnGroup").onclick = () => toggleMode("group");
 document.getElementById("btnZoomIn").onclick = () => panZoom.scaleBy(1.3);
 document.getElementById("btnZoomOut").onclick = () => panZoom.scaleBy(1 / 1.3);
 document.getElementById("btnFit").onclick = fitView;
+document.getElementById("btnPos").onclick = togglePositions;
+document.getElementById("out").addEventListener("input", () => {
+  clearTimeout(textTimer);
+  textTimer = setTimeout(onTextEdit, TEXT_EDIT_MS);
+});
 
 document.getElementById("btnCopy").onclick = async () => {
   const out = document.getElementById("out");
@@ -725,8 +808,10 @@ function seed() {
 
 const restored = loadState();
 if (!restored) seed();
+if (!order.length) order = D2S.defaultOrder(currentGraph());
 applyViewport(viewport);
 render();
+regenerateTextView();
 requestAnimationFrame(() => {
   if (!restored) fitView();
 });
