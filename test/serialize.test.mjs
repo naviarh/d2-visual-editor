@@ -42,7 +42,7 @@ const richGraph = {
     { id: "db", label: "db", x: 40, y: 60, w: 150, h: 70, parentId: "srv", children: [], comments: [], trailingComment: null, rawAttrs: [] }
   ],
   edges: [
-    { id: "e1", source: "Client", target: "srv", label: null, comments: [], trailingComment: "по HTTPS" }
+    { id: "e1", source: "Client", target: "srv", label: null, comments: ["важный переход"], trailingComment: "по HTTPS" }
   ],
   order: ["Client", "srv", "db", "e1"],
   headerComments: ["Схема продакшена"],
@@ -93,6 +93,7 @@ test("serializeClean: rich graph (comments, label, rawAttrs, header/trailing)", 
     "  db",
     "}",
     "",
+    "# важный переход",
     "Client -> srv # по HTTPS",
     "# конец файла"
   ].join("\n"));
@@ -142,6 +143,89 @@ test("empty graph serializes to empty string", () => {
   const empty = { v: 2, nodes: [], edges: [], order: [], headerComments: [], trailingComments: [], idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true };
   assert.equal(serializeClean(empty), "");
   assert.equal(serializeAnnotated(empty), "");
+});
+
+test("fractional/undefined coords round to integer markers", () => {
+  const g = {
+    v: 2,
+    nodes: [
+      { id: "a", label: "a", x: 60.5, y: -12.4, w: 10, h: 10, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [] },
+      { id: "b", label: "b", parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [] }
+    ],
+    edges: [],
+    order: ["a", "b"],
+    headerComments: [],
+    trailingComments: [],
+    idCounter: 1,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    showComments: true
+  };
+  const out = serializeAnnotated(g);
+  assert.ok(out.includes("a # @d2pos 61,-12"), out);
+  assert.ok(out.includes("b # @d2pos 0,0"), out);
+});
+
+test("node without label emits no label:", () => {
+  const g = {
+    v: 2,
+    nodes: [{ id: "srv", label: undefined, x: 0, y: 0, w: 10, h: 10, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [] }],
+    edges: [],
+    order: ["srv"],
+    headerComments: [],
+    trailingComments: [],
+    idCounter: 1,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    showComments: true
+  };
+  assert.equal(serializeClean(g), "srv");
+});
+
+test("child before parent in order: parent hoisted, each node emitted once", () => {
+  const order = ["Client", "Database", "Worker", "API Server", "e1", "e2", "e3"];
+  assert.equal(serializeClean({ ...demoGraph, order }), [
+    "Client",
+    '"API Server": {',
+    "  Database",
+    "  Cache",
+    "}",
+    "Worker",
+    "",
+    'Client -> "API Server" {label: HTTPS}',
+    '"API Server" -> Worker {label: queue}',
+    'Worker -> "API Server".Database {label: "read/write"}'
+  ].join("\n"));
+});
+
+test("duplicate ids in order: emitted only once", () => {
+  const order = ["Client", "Client", "API Server", "Database", "Cache", "Worker", "e1", "e2", "e3"];
+  const out = serializeClean({ ...demoGraph, order });
+  const clientLines = out.split("\n").filter((l) => l === "Client");
+  assert.equal(clientLines.length, 1, "node line appears exactly once");
+  assert.ok(!out.includes("\nClient\nClient"), "no duplicated node line");
+});
+
+test("parentId cycle does not hang", () => {
+  const g = {
+    v: 2,
+    nodes: [
+      { id: "a", label: "a", x: 0, y: 0, w: 10, h: 10, parentId: "b", children: [], comments: [], trailingComment: null, rawAttrs: [] },
+      { id: "b", label: "b", x: 0, y: 0, w: 10, h: 10, parentId: "a", children: [], comments: [], trailingComment: null, rawAttrs: [] }
+    ],
+    edges: [],
+    order: ["a", "b"],
+    headerComments: [],
+    trailingComments: [],
+    idCounter: 1,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    showComments: true
+  };
+  const out = serializeClean(g);
+  assert.equal(typeof out, "string");
+});
+
+test("edge with comment lines is emitted with them", () => {
+  const out = serializeClean(richGraph);
+  assert.ok(out.includes("# важный переход\nClient -> srv # по HTTPS"), out);
 });
 
 test("d2 CLI: clean and annotated compile to identical structure", async (t) => {

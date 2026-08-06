@@ -34,12 +34,16 @@
   function treeOrder(graph) {
     var byId = indexNodes(graph);
     var order = [];
+    var visiting = new Set();
     function visit(n) {
+      if (visiting.has(n.id)) return;
+      visiting.add(n.id);
       order.push(n.id);
       for (var i = 0; i < (n.children || []).length; i++) {
         var c = byId.get(n.children[i]);
         if (c) visit(c);
       }
+      visiting.delete(n.id);
     }
     for (var j = 0; j < graph.nodes.length; j++) {
       var n = graph.nodes[j];
@@ -52,6 +56,10 @@
     return treeOrder(graph).concat(graph.edges.map(function (e) { return e.id; }));
   }
 
+  function intCoord(v) {
+    return Number.isFinite(v) ? Math.round(v) : 0;
+  }
+
   function serialize(graph, options) {
     options = options || {};
     var annotated = !!options.annotated;
@@ -61,6 +69,32 @@
       ? graph.order.slice()
       : defaultOrder(graph);
     var lines = [];
+    var emitted = new Set();
+    var visiting = new Set();
+
+    function markTree(n) {
+      emitted.add(n.id);
+      for (var i = 0; i < (n.children || []).length; i++) {
+        var c = byId.get(n.children[i]);
+        if (c) markTree(c);
+      }
+    }
+
+    // Emit n at top level, hoisting missing ancestors so no subtree is lost.
+    // Returns true if any new content was emitted (for section blank lines).
+    function ensureEmitted(n, depth) {
+      if (emitted.has(n.id)) return false;
+      if (visiting.has(n.id)) return false;
+      if (n.parentId && byId.has(n.parentId)) {
+        visiting.add(n.id);
+        ensureEmitted(byId.get(n.parentId), depth);
+        visiting.delete(n.id);
+        return true;
+      }
+      emitNode(n, depth, byId, lines, annotated);
+      markTree(n);
+      return true;
+    }
 
     for (var h = 0; h < (graph.headerComments || []).length; h++) {
       lines.push("# " + graph.headerComments[h]);
@@ -71,15 +105,14 @@
       var id = order[i];
       var n = byId.get(id);
       if (n) {
-        if (n.parentId && byId.has(n.parentId)) continue;
-        emitNode(n, 0, byId, lines, annotated);
-        prevType = "node";
+        if (ensureEmitted(n, 0)) prevType = "node";
         continue;
       }
       var ed = byEdge.get(id);
-      if (ed) {
+      if (ed && !emitted.has(id)) {
         if (prevType === "node") lines.push("");
         emitEdge(ed, byId, lines);
+        emitted.add(id);
         prevType = "edge";
       }
     }
@@ -94,7 +127,7 @@
   function lineSuffix(n, annotated) {
     var parts = [];
     if (n.trailingComment) parts.push("# " + n.trailingComment);
-    if (annotated) parts.push("# @d2pos " + n.x + "," + n.y);
+    if (annotated) parts.push("# @d2pos " + intCoord(n.x) + "," + intCoord(n.y));
     return parts.length ? " " + parts.join(" ") : "";
   }
 
@@ -110,7 +143,7 @@
       if (kid) kids.push(kid);
     }
     var props = [];
-    if (n.label !== n.id) props.push("label: " + d2Key(n.label));
+    if (n.label != null && n.label !== n.id) props.push("label: " + d2Key(n.label));
     var raw = n.rawAttrs || [];
     if (kids.length || props.length || raw.length) {
       var open = ind + key + ": {" + lineSuffix(n, annotated);
@@ -128,6 +161,9 @@
     var s = byId.get(ed.source);
     var t = byId.get(ed.target);
     if (!s || !t) return;
+    for (var c = 0; c < (ed.comments || []).length; c++) {
+      lines.push("# " + ed.comments[c]);
+    }
     var src = nodePath(byId, ed.source).map(d2Key).join(".");
     var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
     var line = src + " -> " + tgt;
