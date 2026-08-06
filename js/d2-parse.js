@@ -12,8 +12,10 @@
     "source-arrowhead": 1, "target-arrowhead": 1, "pad": 1, "pad-x": 1, "pad-y": 1
   };
 
+  // Spaces are NOT delimiters: unquoted D2 keys/labels may contain them
+  // (e.g. `a b c` is a single node whose key is "a b c").
   function isDelim(ch) {
-    return ch === " " || ch === "\t" || ch === "\r" || ch === "\n" || ch === "#" || ch === '"' ||
+    return ch === "\r" || ch === "\n" || ch === "#" || ch === '"' ||
       ch === "{" || ch === "}" || ch === ":" || ch === "," || ch === "." || ch === "[" || ch === "]" ||
       ch === "(" || ch === ")" || ch === ";";
   }
@@ -35,6 +37,12 @@
         var cs = i;
         while (i < n && src[i] !== "\n") advance(src[i]);
         tokens.push({ type: "comment", text: src.slice(cs + 1, i).trim(), line: startLine, col: startCol });
+        continue;
+      }
+      if (ch === "/" && src[i + 1] === "/") {
+        var cs2 = i;
+        while (i < n && src[i] !== "\n") advance(src[i]);
+        tokens.push({ type: "comment", text: src.slice(cs2 + 2, i).trim(), line: startLine, col: startCol });
         continue;
       }
       if (ch === '"') {
@@ -83,7 +91,7 @@
         if (cc === "-" && src[i + 1] === ">") break;
         advance(cc);
       }
-      tokens.push({ type: "ident", value: src.slice(is, i), line: startLine, col: startCol, off: is, end: i });
+      tokens.push({ type: "ident", value: src.slice(is, i).trim(), line: startLine, col: startCol, off: is, end: i });
     }
     return { tokens: tokens };
   }

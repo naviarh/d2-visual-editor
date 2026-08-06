@@ -285,12 +285,37 @@ test("container syntax without colon: a { label: x }", () => {
   assert.deepEqual(a.rawAttrs, ["shape: cylinder"]);
 });
 
-test("label shortcut: a b means node a with label b", () => {
-  const r = parseD2("a b\n");
+test("unquoted key keeps inner spaces: a b c is one node", () => {
+  const r = parseD2("a b c\n");
   assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes.length, 1);
   const a = r.graph.nodes[0];
-  assert.equal(a.id, "a");
-  assert.equal(a.label, "b");
+  assert.equal(a.id, "a b c");
+  assert.equal(a.label, "a b c");
+});
+
+test("unquoted multi-word label after colon", () => {
+  const r = parseD2('x: hello world\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes.length, 1);
+  assert.equal(r.graph.nodes[0].id, "x");
+  assert.equal(r.graph.nodes[0].label, "hello world");
+});
+
+test("// line comments (D2 supports both # and //)", () => {
+  const r = parseD2("// header\nClient # note\n// tail\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.headerComments, ["header"]);
+  assert.equal(r.graph.nodes.length, 1);
+  assert.equal(r.graph.nodes[0].id, "Client");
+  assert.equal(r.graph.nodes[0].trailingComment, "note");
+  assert.deepEqual(r.graph.trailingComments, ["tail"]);
+});
+
+test("// mid-key is part of the key (matches d2 lexer)", () => {
+  const r = parseD2("Client // note\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].id, "Client // note");
 });
 
 test("; acts as statement separator", () => {
