@@ -139,7 +139,7 @@
 
   SHAPES.document = {
     name: 'document', ratio: null,
-    params: { waveAmp: 0.19, waveUp: 0.67 },
+    params: { waveAmp: 0.12, waveUp: 0.67 },
     render: function (b, p) {
       var amp = b.h * p.waveAmp;
       var by = b.y + b.h - amp;
@@ -165,7 +165,7 @@
 
   SHAPES.cylinder = {
     name: 'cylinder', ratio: null,
-    params: { ellipseRise: 0.17 },
+    params: { ellipseRise: 0.11 },
     render: function (b, p) {
       var ry = Math.min(p.ellipseRise * b.w, b.h * 0.3);
       var rx = b.w / 2, cx = b.x + rx;
@@ -191,7 +191,7 @@
 
   SHAPES.queue = {
     name: 'queue', ratio: null,
-    params: { bubbleRise: 0.36 },
+    params: { bubbleRise: 0.26 },
     render: function (b, p) {
       var bw = p.bubbleRise * b.h;
       var ry = b.h / 2;
@@ -252,7 +252,7 @@
 
   SHAPES.callout = {
     name: 'callout', ratio: null,
-    params: { tailW: 0.3, tailH: 0.5 },
+    params: { tailW: 0.42, tailH: 0.38 },
     render: function (b, p) {
       var tw = p.tailW * b.w, th = p.tailH * b.h;
       var by = b.y + b.h - th;
@@ -291,7 +291,7 @@
 
   SHAPES.person = {
     name: 'person', ratio: null,
-    params: { headR: 0.17, shoulderTop: 0.41, shoulderH: 0.27 },
+    params: { headR: 0.13, shoulderTop: 0.33, shoulderH: 0.27 },
     render: function (b, p) {
       var r = p.headR * Math.min(b.w, b.h);
       var cx = b.x + b.w / 2, cy = b.y + r;
@@ -403,7 +403,7 @@
 
   SHAPES.c4person = {
     name: 'c4-person', ratio: null,
-    params: { headR: 0.27, rx: 8 },
+    params: { headR: 0.21, rx: 8 },
     render: function (b, p) {
       var r = p.headR * Math.min(b.w, b.h);
       var cx = b.x + b.w / 2, cy = b.y + r;
