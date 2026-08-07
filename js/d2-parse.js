@@ -44,6 +44,49 @@
     }
   }
 
+  // d2parser trimSpaceAfterLastNewline: drop trailing whitespace, and if the
+  // last line is empty, drop the final newline too.
+  function trimSpaceAfterLastNewline(s) {
+    var lastNL = s.lastIndexOf("\n");
+    if (lastNL === -1) return s.replace(/\s+$/, "");
+    var lastLine = s.slice(lastNL + 1).replace(/\s+$/, "");
+    if (lastLine.length === 0) return s.slice(0, lastNL);
+    return s.slice(0, lastNL + 1) + lastLine;
+  }
+
+  // d2parser trimCommonIndent: strip the smallest leading indentation (tabs
+  // count as 2 columns) shared by every non-empty line. Any line without
+  // leading whitespace returns the input untouched.
+  function trimCommonIndent(s) {
+    var lines = s.split("\n");
+    var common = null;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i] === "") continue;
+      var ws = 0;
+      while (ws < lines[i].length && (lines[i][ws] === " " || lines[i][ws] === "\t")) ws++;
+      if (lines[i].slice(ws).trim() === "") continue;
+      if (ws === 0) return s;
+      var indentLen = 0;
+      for (var j = 0; j < ws; j++) indentLen += lines[i][j] === "\t" ? 2 : 1;
+      if (common === null || indentLen < common) common = indentLen;
+    }
+    if (common === null || common === 0) return s;
+    var out = [];
+    for (var k = 0; k < lines.length; k++) {
+      if (lines[k] === "") { out.push(lines[k]); continue; }
+      var have = 0;
+      var idx = 0;
+      while (idx < lines[k].length && have < common) {
+        if (lines[k][idx] === "\t") have += 2;
+        else if (lines[k][idx] === " ") have += 1;
+        else break;
+        idx++;
+      }
+      out.push(lines[k].slice(idx));
+    }
+    return out.join("\n");
+  }
+
   function arrowLen(k, src) {
     var c = src[k];
     if (c === "-" && (src[k + 1] === "-" || src[k + 1] === ">" || src[k + 1] === "*")) return 2;
@@ -79,14 +122,37 @@
       if (ch === "#") {
         var cs = i;
         while (i < n && src[i] !== "\n") advance(src[i]);
-        tokens.push({ type: "comment", text: src.slice(cs + 1, i).trim(), line: startLine, col: startCol });
+        var ctext = src.slice(cs + 1, i);
+        // D2 parseCommentLine strips exactly one leading space after `#`.
+        if (ctext.charAt(0) === " ") ctext = ctext.slice(1);
+        tokens.push({ type: "comment", text: ctext, line: startLine, col: startCol });
         inValue = false;
         continue;
       }
-      if (ch === "/" && src[i + 1] === "/") {
-        var cs2 = i;
-        while (i < n && src[i] !== "\n") advance(src[i]);
-        tokens.push({ type: "comment", text: src.slice(cs2 + 2, i).trim(), line: startLine, col: startCol });
+      // D2 parseBlockComment: `"""` at statement position (inValue false) opens
+      // a block comment; `""` is enough to open one, like d2parser. `//` is NOT
+      // a comment — it is plain unquoted text.
+      if (ch === '"' && src[i + 1] === '"' && !inValue) {
+        var bLine = startLine, bCol = startCol;
+        advance(src[i]); advance(src[i]); advance(src[i]);
+        while (i < n && (src[i] === " " || src[i] === "\t")) advance(src[i]);
+        if (i < n && src[i] === "\n") advance(src[i]);
+        var bbuf = "";
+        var bclosed = false;
+        while (i < n) {
+          if (src[i] === '"' && src[i + 1] === '"' && src[i + 2] === '"') {
+            advance(src[i]); advance(src[i]); advance(src[i]);
+            bclosed = true;
+            break;
+          }
+          bbuf += src[i];
+          advance(src[i]);
+        }
+        if (!bclosed) {
+          return { error: { line: bLine, col: bCol, message: 'незакрытый блочный комментарий (ожидается """)' } };
+        }
+        var btext = trimCommonIndent(trimSpaceAfterLastNewline(bbuf));
+        tokens.push({ type: "comment", text: btext, line: bLine, col: bCol, block: true });
         inValue = false;
         continue;
       }
@@ -241,7 +307,30 @@
     function skipNl() { while (peek() && peek().type === "nl") next(); }
     function commentIsInline() {
       var t = peek();
-      return !!t && t.type === "comment" && pos > 0 && tokens[pos - 1].type !== "nl";
+      return !!t && t.type === "comment" && !t.block && pos > 0 && tokens[pos - 1].type !== "nl";
+    }
+
+    // D2 parseComment: consecutive `#` lines (no blank line between them) form
+    // one comment, joined with "\n". Block comments (`"""`) are self-contained
+    // and never merge with following lines.
+    function collectComment() {
+      var t = next();
+      var text = t.text;
+      if (t.block) return text;
+      var cLine = t.line;
+      while (true) {
+        var nt = peek();
+        if (!nt) break;
+        if (nt.type === "nl") { next(); continue; }
+        if (nt.type === "comment" && !nt.block && nt.line === cLine + 1) {
+          text += "\n" + nt.text;
+          cLine = nt.line;
+          next();
+          continue;
+        }
+        break;
+      }
+      return text;
     }
 
     // D2 requires every statement to end at a line boundary, `;`, `}` or a
@@ -250,9 +339,15 @@
     function checkStatementEnd() {
       var t = peek();
       if (!t) return;
-      if (t.type === "nl" || t.type === "comment") return;
-      if (t.type === "punct" && (t.value === "}" || t.value === "]")) return;
+      if (t.type === "nl") return;
       if (t.line > lastLine) return;
+      if (t.type === "comment") {
+        // `#` comments are consumed inline by attachInline*; a block comment
+        // on the same line is invalid in D2 ("unexpected text after ...").
+        if (t.block) errorAt(t, "неожиданный текст после оператора");
+        return;
+      }
+      if (t.type === "punct" && (t.value === "}" || t.value === "]")) return;
       errorAt(t, "неожиданный текст после оператора");
     }
     function curScope() { return scopeStack[scopeStack.length - 1]; }
@@ -477,8 +572,7 @@
         if (!t) { errorAt(null, "незакрытый блок атрибутов ребра"); }
         if (t.type === "punct" && t.value === "}") { next(); return; }
         if (t.type === "comment") {
-          ed.comments.push(t.text);
-          next();
+          ed.comments.push(collectComment());
           continue;
         }
         var p = parsePath();
@@ -613,6 +707,7 @@
       if (t.type === "comment") {
         if (commentIsInline()) {
           var c = next();
+          if (c.block) { errorAt(c, "неожиданный текст после оператора"); }
           var scope = curScope();
           if (scope) {
             var m = extractMarker(c.text);
@@ -624,8 +719,7 @@
             }
           }
         } else {
-          pending[curDepth()].push(t.text);
-          next();
+          pending[curDepth()].push(collectComment());
         }
         return true;
       }

@@ -143,8 +143,8 @@ test("§10 edge to undeclared block: implicit node created; later explicit merge
 });
 
 test("§10 row comment preserved as comments[], marker appended", () => {
-  const g1 = parse('// header\nClient # @d2pos 60,300\n');
-  const g2 = parse('// header\nClient # note # @d2pos 60,300\n');
+  const g1 = parse('# header\nClient # @d2pos 60,300\n');
+  const g2 = parse('# header\nClient # note # @d2pos 60,300\n');
   const out = mergeGraph(g2, g1);
 
   const cl = nodeById(out.graph, "Client");
@@ -154,8 +154,8 @@ test("§10 row comment preserved as comments[], marker appended", () => {
 });
 
 test("§10 comments before first element / at end preserved", () => {
-  const g1 = parse('// top\nClient\n// bottom\n');
-  const g2 = parse('// top\nClient # @d2pos 10,10\n// bottom\n');
+  const g1 = parse('# top\nClient\n# bottom\n');
+  const g2 = parse('# top\nClient # @d2pos 10,10\n# bottom\n');
   const out = mergeGraph(g2, g1);
 
   assert.equal(out.graph.headerComments[0], "top");

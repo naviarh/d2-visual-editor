@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { parseD2 } = require("../js/d2-parse.js");
-const { serializeClean, serializeAnnotated } = require("../js/d2-serialize.js");
+const { serializeClean, serializeAnnotated, stripMarkers } = require("../js/d2-serialize.js");
 const exec = promisify(execFile);
 
 const N = (id, parentId = null, extra = {}) => ({
@@ -131,7 +131,7 @@ test("rich annotated code: label, rawAttrs, comments, header/trailing, trailingC
   const r = parseD2(src);
   assert.ok(r.ok, JSON.stringify(r.error));
   const g = r.graph;
-  assert.deepEqual(g.headerComments, ["Схема продакшена", "внешний клиент"]);
+  assert.deepEqual(g.headerComments, ["Схема продакшена\nвнешний клиент"], "consecutive # lines merge (D2 parseComment)");
   assert.deepEqual(g.trailingComments, ["конец файла"]);
   assert.deepEqual(g.order, ["Client", "srv", "db", "e1"]);
   const client = g.nodes.find((n) => n.id === "Client");
@@ -447,20 +447,86 @@ test("D2 string parity: parse -> serialize -> parse is stable for string forms",
   }
 });
 
-test("// line comments (D2 supports both # and //)", () => {
-  const r = parseD2("// header\nClient # note\n// tail\n");
+test("// is NOT a comment: it is plain unquoted text (D2 v0.7.1)", () => {
+  const r = parseD2("// header\nClient\n// tail\n");
   assert.ok(r.ok, JSON.stringify(r.error));
-  assert.deepEqual(r.graph.headerComments, ["header"]);
-  assert.equal(r.graph.nodes.length, 1);
-  assert.equal(r.graph.nodes[0].id, "Client");
-  assert.equal(r.graph.nodes[0].trailingComment, "note");
-  assert.deepEqual(r.graph.trailingComments, ["tail"]);
+  assert.deepEqual(r.graph.nodes.map((n) => n.id), ["// header", "Client", "// tail"]);
+  assert.deepEqual(r.graph.headerComments, []);
+  const e = parseD2("x -> y // note\n");
+  assert.ok(e.ok, JSON.stringify(e.error));
+  assert.deepEqual(e.graph.edges.map((ed) => [ed.source, ed.target]), [["x", "y // note"]], "target absorbs // note");
 });
 
 test("// mid-key is part of the key (matches d2 lexer)", () => {
   const r = parseD2("Client // note\n");
   assert.ok(r.ok, JSON.stringify(r.error));
   assert.equal(r.graph.nodes[0].id, "Client // note");
+});
+
+test("consecutive # lines merge into one comment with \\n (d2 parseComment)", () => {
+  const r1 = parseD2("# one\n# two\nx\n");
+  assert.ok(r1.ok, JSON.stringify(r1.error));
+  assert.deepEqual(r1.graph.headerComments, ["one\ntwo"]);
+  const r2 = parseD2("x\n# a\n# b\n");
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.deepEqual(r2.graph.trailingComments, ["a\nb"]);
+  const r3 = parseD2("x: { # c1\n# c2\ny\n}\n");
+  assert.ok(r3.ok, JSON.stringify(r3.error));
+  const x = r3.graph.nodes.find((n) => n.id === "x");
+  const y = r3.graph.nodes.find((n) => n.id === "y");
+  assert.equal(x.trailingComment, "c1", "inline comment stays on its line's entity");
+  assert.deepEqual(y.comments, ["c2"]);
+});
+
+test("blank line separates # comment runs (d2 parseComment)", () => {
+  const r = parseD2("# one\n\n# two\nx\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.headerComments, ["one", "two"]);
+});
+
+test('""" block comments: multi-line, single-line, indent-stripped', () => {
+  const multi = parseD2('"""\nblock\ncomment\n"""\nx\n');
+  assert.ok(multi.ok, JSON.stringify(multi.error));
+  assert.deepEqual(multi.graph.headerComments, ["block\ncomment"]);
+  const single = parseD2('"""one line"""\nx\n');
+  assert.ok(single.ok, JSON.stringify(single.error));
+  assert.deepEqual(single.graph.headerComments, ["one line"]);
+  const ind = parseD2('"""\n  indented\n  lines\n"""\nx\n');
+  assert.ok(ind.ok, JSON.stringify(ind.error));
+  assert.deepEqual(ind.graph.headerComments, ["indented\nlines"]);
+});
+
+test('""" in statement position after a word is plain text (matches d2 lexer)', () => {
+  const r = parseD2('x """inline"""\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].id, 'x """inline"""');
+});
+
+test('unterminated """ block comment is an error at 1:1', () => {
+  const r = parseD2('"""\nnever closed\nx\n');
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /незакрытый блочный комментарий/);
+  assert.equal(r.error.line, 1);
+  assert.equal(r.error.col, 1);
+});
+
+test('""" block comment inside edge attribute block', () => {
+  const r = parseD2('a -> b {\n  """\n  edge note\n  """\n  label: hi\n}\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const e = r.graph.edges[0];
+  assert.deepEqual(e.comments, ["edge note"]);
+});
+
+test("serializer emits multi-line comments as separate # lines, round-trip stable", () => {
+  const r1 = parseD2("# one\n# two\nx\n");
+  assert.ok(r1.ok, JSON.stringify(r1.error));
+  const text = serializeClean(r1.graph);
+  assert.equal(text, "# one\n# two\nx");
+  const r2 = parseD2(text);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.deepEqual(r2.graph.headerComments, ["one\ntwo"]);
+  const annotated = serializeAnnotated(r1.graph);
+  assert.equal(stripMarkers(annotated), text, "parity: annotated = clean + markers");
 });
 
 test("; acts as statement separator", () => {
@@ -481,7 +547,7 @@ test("empty container a: {} and empty input", () => {
 test("comment lines before first element become headerComments, at end trailingComments", () => {
   const r = parseD2("# one\n# two\na\n# end\n");
   assert.ok(r.ok, JSON.stringify(r.error));
-  assert.deepEqual(r.graph.headerComments, ["one", "two"]);
+  assert.deepEqual(r.graph.headerComments, ["one\ntwo"], "adjacent # lines merge with \\n");
   assert.deepEqual(r.graph.trailingComments, ["end"]);
   assert.deepEqual(r.graph.nodes.map((n) => n.id), ["a"]);
 });

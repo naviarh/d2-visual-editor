@@ -61,6 +61,13 @@
     return Number.isFinite(v) ? Math.round(v) : 0;
   }
 
+  // A comment entry may span several lines (merged `#` lines, `"""` blocks);
+  // D2 emits each line as its own `#`-comment, so split on newlines.
+  function pushComment(lines, ind, text) {
+    var parts = String(text).split("\n");
+    for (var i = 0; i < parts.length; i++) lines.push(ind + "# " + parts[i]);
+  }
+
   function serialize(graph, options) {
     options = options || {};
     var annotated = !!options.annotated;
@@ -98,7 +105,7 @@
     }
 
     for (var h = 0; h < (graph.headerComments || []).length; h++) {
-      lines.push("# " + graph.headerComments[h]);
+      pushComment(lines, "", graph.headerComments[h]);
     }
 
     var prevType = null;
@@ -119,7 +126,7 @@
     }
 
     for (var t = 0; t < (graph.trailingComments || []).length; t++) {
-      lines.push("# " + graph.trailingComments[t]);
+      pushComment(lines, "", graph.trailingComments[t]);
     }
 
     return lines.join("\n");
@@ -135,7 +142,7 @@
   function emitNode(n, depth, byId, lines, annotated) {
     var ind = "  ".repeat(depth);
     for (var c = 0; c < (n.comments || []).length; c++) {
-      lines.push(ind + "# " + n.comments[c]);
+      pushComment(lines, ind, n.comments[c]);
     }
     var key = d2Key(n.id);
     var kids = [];
@@ -168,7 +175,7 @@
     var t = byId.get(ed.target);
     if (!s || !t) return;
     for (var c = 0; c < (ed.comments || []).length; c++) {
-      lines.push("# " + ed.comments[c]);
+      pushComment(lines, "", ed.comments[c]);
     }
     var src = nodePath(byId, ed.source).map(d2Key).join(".");
     var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
