@@ -139,9 +139,9 @@
   <div id="flow">
     <div class="flowbar"><b>Схема</b>
       <button id="btnBlock">+ Блок</button>
+      <select id="shapeSel" title="Форма выбранного блока" disabled></select>
       <button id="btnEdge">Стрелка</button>
       <button id="btnGroup">Группировать</button>
-      <select id="shapeSel" title="Форма выбранного блока" disabled></select>
       <span class="sep"></span>
       <button id="btnSort">Упорядочить по связям</button>
       <span class="sep"></span>
@@ -199,7 +199,7 @@ const modalOk = document.getElementById("modal-ok");
 const modalCancel = document.getElementById("modal-cancel");
 const shapeSel = document.getElementById("shapeSel");
 
-shapeSel.innerHTML = '<option value="">по умолчанию</option>'
+shapeSel.innerHTML = '<option value="">Тип блока</option>'
   + D2SHP.SHAPE_NAMES.map((s) => '<option value="' + esc(s) + '">' + esc(s) + '</option>').join("");
 
 modalTitle.addEventListener("pointerdown", (e) => {
