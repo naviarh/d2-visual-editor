@@ -60,6 +60,45 @@ function cliValidate(file) {
     });
 }
 
+test("shape catalog: all 18 names pass d2 validate; our parser round-trips them", async (t) => {
+  try {
+    await exec("d2", ["--version"]);
+  } catch {
+    t.skip("d2 CLI not available");
+    return;
+  }
+  const { SHAPE_NAMES } = require("../js/d2-shapes.js");
+  const dir = await mkdtemp(join(tmpdir(), "d2parity-shape-"));
+  try {
+    for (let i = 0; i < SHAPE_NAMES.length; i++) {
+      const name = SHAPE_NAMES[i];
+      const src = "x: { shape: " + name + " }";
+      const r = parseD2(src);
+      assert.ok(r.ok, `shape ${name}: parser accepts`);
+      const n = r.graph.nodes.find((n) => n.id === "x");
+      assert.equal(n.shape, name, `shape ${name}: field set`);
+      const file = join(dir, `s${i}.d2`);
+      await writeFile(file, src + "\n");
+      const cli = await cliValidate(file);
+      assert.equal(cli.ok, true, `shape ${name}: d2 validate accepts`);
+      const round = parseD2(serializeClean(r.graph) + "\n");
+      assert.ok(round.ok, `shape ${name}: re-serialized graph reparses`);
+      const rn = round.graph.nodes.find((n) => n.id === "x");
+      assert.equal(rn.shape, name, `shape ${name}: round-trip keeps the field`);
+    }
+    // case is preserved in the model, valid for d2 (registry is case-insensitive)
+    const src = "x: { shape: Diamond }";
+    const r = parseD2(src);
+    assert.ok(r.ok, "shape: Diamond parses");
+    assert.equal(r.graph.nodes.find((n) => n.id === "x").shape, "Diamond", "case preserved");
+    const file = join(dir, "case.d2");
+    await writeFile(file, src + "\n");
+    assert.equal((await cliValidate(file)).ok, true, "shape: Diamond valid for d2 validate");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("§8 parity table: our parser agrees with d2 validate (verdict and error line)", async (t) => {
   try {
     await exec("d2", ["--version"]);
