@@ -417,3 +417,31 @@ test("graph label with newline but no labelBlock is emitted as a block string", 
   assert.equal(r.graph.nodes[0].label, "l1\nl2");
   assert.equal(serializeClean(r.graph), serializeClean(g), "stable");
 });
+
+test("attribute-array values round-trip verbatim (nodes and edges)", () => {
+  const src = "x: [a, b]\ny: [1, 2]\nx -> y: [x]\n";
+  const r = parseD2(src);
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const out = serializeClean(r.graph);
+  assert.equal(out, "x: [a, b]\ny: [1, 2]\n\nx -> y: [x]", "array values re-emitted as-is");
+  const x = r.graph.nodes.find((n) => n.id === "x");
+  assert.equal(x.label, "x", "arrays are not labels");
+  assert.equal(x.valueArray, "[a, b]");
+  const r2 = parseD2(out);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.equal(serializeClean(r2.graph), out, "stable under re-serialize");
+});
+
+test("parity: array-value nodes carry markers on the value line", () => {
+  const g = {
+    v: 2,
+    nodes: [{ id: "x", label: null, valueArray: "[a, b]", x: 4, y: 90, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true }],
+    edges: [],
+    order: ["x"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "x: [a, b]");
+  assert.equal(serializeAnnotated(g), "x: [a, b] # @d2pos 4,90");
+  assert.equal(stripMarkers(serializeAnnotated(g)), serializeClean(g), "parity: annotated = clean + markers");
+});

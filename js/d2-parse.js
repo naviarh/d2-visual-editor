@@ -589,7 +589,7 @@
           }
           next();
         }
-        return src.slice(startOff, endOff);
+        return { type: "array", value: src.slice(startOff, endOff) };
       }
       if (t.type === "ident") {
         var v = t.value;
@@ -664,6 +664,9 @@
           if (v.type === "block") {
             target.label = v.value;
             target.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+          } else if (v.type === "array") {
+            // `label: [a]` is an attribute array in D2 — the label stays empty.
+            target.valueArray = v.value;
           } else {
             target.label = v;
           }
@@ -674,7 +677,7 @@
         var parts = String(v.value || "").split("\n").map(function (l) { return "  " + l; });
         target.rawAttrs.push(key + ": |" + v.quote + v.tag + "\n" + parts.join("\n") + "\n" + blockStringCloser(v.quote));
       } else {
-        target.rawAttrs.push(key + (v != null ? ": " + v : ":"));
+        target.rawAttrs.push(key + (v != null ? ": " + (v.value != null ? v.value : v) : ":"));
       }
       if (commentIsInline()) {
         var c = next();
@@ -772,6 +775,8 @@
             if (v.type === "block") {
               le.label = v.value;
               le.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+            } else if (v.type === "array") {
+              le.valueArray = v.value;
             } else {
               le.label = v;
             }
@@ -808,12 +813,16 @@
         if (v && v.type === "block") {
           cn.label = v.value;
           cn.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+        } else if (v && v.type === "array") {
+          // An array value is an attribute array in D2, never a label.
+          cn.valueArray = v.value;
         } else {
           cn.label = v;
         }
         // `x: a { b }` — value becomes the label, `{ b }` the container
         // (valid in D2 only when `{` is on the same line).
         if (peekIs("{") && peek().line === lastLine) {
+          if (v && v.type === "array") { errorAt(peek(), "массив не может иметь тело '{}'"); }
           next();
           parseBlock(cn);
           attachInlineNode(cn);

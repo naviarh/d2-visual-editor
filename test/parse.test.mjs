@@ -407,6 +407,43 @@ test("D2 string parity: value then container on the same line sets the label", (
   }
 });
 
+test("array value is an attribute array, not a label (D2 parity)", () => {
+  const r = parseD2("x: [a, b]\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const x = r.graph.nodes[0];
+  assert.equal(x.id, "x");
+  assert.equal(x.label, "x", "no explicit label (defaults to id) — arrays are never labels in D2");
+  assert.equal(x.valueArray, "[a, b]");
+});
+
+test("array value on an edge is kept verbatim", () => {
+  const r = parseD2("a -> b: [x]\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges[0].label, null);
+  assert.equal(r.graph.edges[0].valueArray, "[x]");
+});
+
+test("label: [a] and shape: [a, b] keep the array, label stays empty", () => {
+  const r = parseD2("x: {\n  label: [a]\n  shape: [a, b]\n}\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const x = r.graph.nodes[0];
+  assert.equal(x.label, "x", "no explicit label");
+  assert.equal(x.valueArray, "[a]");
+  assert.deepEqual(x.rawAttrs, ["shape: [a, b]"]);
+});
+
+test("an array value cannot have a container body (D2: unexpected text after array)", () => {
+  const r = parseD2("x: [a] { b }\n");
+  assert.ok(!r.ok, "expected error");
+  assert.ok(/массив не может иметь тело/.test(r.error.message), r.error.message);
+});
+
+test("unterminated array is an error", () => {
+  const r = parseD2("x: [a\n");
+  assert.ok(!r.ok, "expected error");
+  assert.ok(/незакрытый массив/.test(r.error.message), r.error.message);
+});
+
 test("D2 string parity: syntax errors match v0.7.1 line/col behavior", () => {
   const cases = [
     ["x: \n", "ожидается значение после ':'"],

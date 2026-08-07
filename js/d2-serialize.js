@@ -238,6 +238,11 @@
       lines[bi] += lineSuffix(n, annotated);
       return;
     }
+    if (n.valueArray) {
+      // An attribute-array value: `key: [a, b]` (never a label in D2).
+      lines.push(ind + key + ": " + n.valueArray + lineSuffix(n, annotated));
+      return;
+    }
     if (plainLabel) {
       lines.push(ind + key + ": {" + lineSuffix(n, annotated));
       lines.push(ind + "  label: " + d2Value(n.label));
@@ -270,6 +275,12 @@
     if (lb) {
       var bi = emitBlockString(lines, line + ": ", lb);
       if (ed.trailingComment) lines[bi] += " # " + ed.trailingComment;
+      return;
+    }
+    if (ed.valueArray) {
+      var va = line + ": " + ed.valueArray;
+      if (ed.trailingComment) va += " # " + ed.trailingComment;
+      lines.push(va);
       return;
     }
     var attrs = [];
