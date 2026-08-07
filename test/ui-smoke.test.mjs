@@ -640,3 +640,47 @@ test("moving an edge line inside its container does not freeze the page (no dupl
     await browser.close();
   }
 });
+
+test("UI E2E: shape selector applies a shape to the selected block", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const box = await page.$eval("#nodes .node:not(.container)", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(box.x, box.y);
+    await new Promise((r) => setTimeout(r, 200));
+
+    assert.equal(await page.$eval("#shapeSel", (el) => el.disabled), false, "selector enabled for a selected node");
+    assert.equal(await page.$eval("#shapeSel", (el) => el.value), "", "default value is the empty (rectangle) option");
+
+    await page.select("#shapeSel", "diamond");
+    await new Promise((r) => setTimeout(r, 200));
+
+    const shapePaths = await page.$$eval("#nodes .node.selected svg.nshape path", (els) => els.length);
+    assert.ok(shapePaths >= 1, "selected node renders an inline shape SVG");
+
+    // queueGen (1 s) regenerates the code with shape: diamond right after the label
+    await new Promise((r) => setTimeout(r, 1400));
+    const txt = await text(page);
+    assert.ok(txt.includes("shape: diamond"), "shape emitted into the code");
+
+    // export SVG carries the same geometry (diamond = closed L-only polygon)
+    await page.evaluate(() => {
+      window.__svg = null;
+      window.showSaveFilePicker = async (opts) => ({
+        name: opts.suggestedName,
+        createWritable: async () => ({ write: async (c) => { window.__svg = c; }, close: async () => {} })
+      });
+    });
+    await page.click("#btnCopyMenu");
+    await page.click('#copy-menu button[data-act="export-svg"]');
+    await new Promise((r) => setTimeout(r, 200));
+    const svg = await page.evaluate(() => window.__svg);
+    assert.ok(/<path d="M[\d.]+ [\d.]+L[\d.]+ [\d.]+L[\d.]+ [\d.]+L[\d.]+ [\d.]+Z"/.test(svg), "export SVG contains the diamond polygon");
+  } finally {
+    await browser.close();
+  }
+});

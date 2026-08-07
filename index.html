@@ -46,7 +46,15 @@
   .node.container .nlabel { position: absolute; top: 4px; left: 8px; font-size: 18px; font-weight: 700; color: #3b5fbd; }
   .node.group { outline: 3px solid #e8b51e; outline-offset: 3px; }
   .node.src { border-color: #2f9e44; box-shadow: 0 0 0 3px rgba(47,158,68,.25); }
+  .node.shaped { border: none; background: none; box-shadow: none; }
+  .node.shaped.selected { box-shadow: 0 0 0 3px rgba(47,111,237,.25); }
+  .node.shaped.src { box-shadow: 0 0 0 3px rgba(47,158,68,.25); }
+  .nshape { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .nshape-path { fill: #ffffff; stroke: #7a8699; stroke-width: 2; }
+  .node.selected .nshape-path { stroke: #2f6fed; }
+  .node.src .nshape-path { stroke: #2f9e44; }
   .nlabel { font-size: 18px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; }
+  .nlabel.bottom { position: absolute; left: 0; right: 0; bottom: 4px; font-size: 13px; font-weight: 500; padding: 2px 6px; }
   #split { flex: 1; display: flex; min-height: 0; }
   #code-panel { width: 33.333%; min-width: 200px; display: flex; flex-direction: column; border-right: 1px solid #dfe2e8; }
   #divider { flex: 0 0 6px; cursor: col-resize; background: #e6e8ee; }
@@ -127,6 +135,7 @@
       <button id="btnBlock">+ Блок</button>
       <button id="btnEdge">Стрелка</button>
       <button id="btnGroup">Группировать</button>
+      <select id="shapeSel" title="Форма выбранного блока" disabled></select>
       <span class="sep"></span>
       <button id="btnSort">Упорядочить по связям</button>
       <span class="sep"></span>
@@ -182,6 +191,10 @@ const modalTitle = document.getElementById("modal-title");
 const modalInput = document.getElementById("modal-input");
 const modalOk = document.getElementById("modal-ok");
 const modalCancel = document.getElementById("modal-cancel");
+const shapeSel = document.getElementById("shapeSel");
+
+shapeSel.innerHTML = '<option value="">по умолчанию</option>'
+  + D2SHP.SHAPE_NAMES.map((s) => '<option value="' + esc(s) + '">' + esc(s) + '</option>').join("");
 
 modalTitle.addEventListener("pointerdown", (e) => {
   e.preventDefault();
@@ -407,7 +420,10 @@ function isContainer(n) {
 function boxSize(n) {
   const memo = new Set();
   function measure(x) {
-    if (!isContainer(x)) return { w: x.w, h: x.h };
+    if (!isContainer(x)) {
+      const norm = D2SHP.normalizeRatio(x.shape || null, x.w, x.h);
+      return { w: norm.w, h: norm.h };
+    }
     if (memo.has(x.id)) return { w: 0, h: 0 };
     memo.add(x.id);
     const PAD = 24, HEAD = 28;
@@ -589,6 +605,12 @@ function renderEdges() {
   svgEl.innerHTML = inner;
 }
 
+function shapeLabelBottom(n) {
+  if (isContainer(n)) return false;
+  const name = n.shape ? String(n.shape).toLowerCase() : "";
+  return name === "person" || name === "c4-person";
+}
+
 function renderNodes() {
   nodesEl.innerHTML = "";
   for (const n of treeOrder()) {
@@ -596,7 +618,7 @@ function renderNodes() {
     const s = boxSize(n);
     const el = document.createElement("div");
     el.className = "node"
-      + (isContainer(n) ? " container" : "")
+      + (isContainer(n) ? " container" : " shaped")
       + (selectedId === n.id ? " selected" : "")
       + (groupParent === n.id ? " group" : "")
       + (edgeSrc === n.id ? " src" : "");
@@ -604,8 +626,23 @@ function renderNodes() {
     el.style.top = a.y + "px";
     el.style.width = s.w + "px";
     el.style.height = s.h + "px";
+    if (!isContainer(n)) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "nshape");
+      svg.setAttribute("width", s.w);
+      svg.setAttribute("height", s.h);
+      svg.setAttribute("viewBox", "0 0 " + s.w + " " + s.h);
+      const paths = D2SHP.renderShape(n.shape || null, { x: 0, y: 0, w: s.w, h: s.h });
+      for (const d of paths) {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", d);
+        path.setAttribute("class", "nshape-path");
+        svg.appendChild(path);
+      }
+      el.appendChild(svg);
+    }
     const lab = document.createElement("div");
-    lab.className = "nlabel";
+    lab.className = "nlabel" + (shapeLabelBottom(n) ? " bottom" : "");
     lab.textContent = n.label;
     el.appendChild(lab);
     el.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -620,6 +657,9 @@ function renderNodes() {
 function renderHint() {
   document.getElementById("btnEdge").classList.toggle("active", mode === "edge");
   document.getElementById("btnGroup").classList.toggle("active", mode === "group");
+  const sel = nodes.get(selectedId);
+  shapeSel.disabled = !(sel && !isContainer(sel));
+  shapeSel.value = (sel && !isContainer(sel) && sel.shape) ? sel.shape : "";
   let txt = "Клик — выбрать. Drag — двигать. Двойной клик по блоку — переименовать, по стрелке — подпись. Delete — удалить.";
   if (mode === "edge") {
     txt = edgeSrc
@@ -896,6 +936,14 @@ function toggleMode(m) {
 document.getElementById("btnBlock").onclick = addBlock;
 document.getElementById("btnEdge").onclick = () => toggleMode("edge");
 document.getElementById("btnGroup").onclick = () => toggleMode("group");
+shapeSel.onchange = () => {
+  const n = nodes.get(selectedId);
+  if (!n || isContainer(n)) return;
+  const v = shapeSel.value;
+  if (!v) delete n.shape;
+  else n.shape = v;
+  render();
+};
 document.getElementById("btnZoomIn").onclick = () => panZoom.scaleBy(1.3);
 document.getElementById("btnZoomOut").onclick = () => panZoom.scaleBy(1 / 1.3);
 document.getElementById("btnFit").onclick = fitView;
@@ -1139,11 +1187,13 @@ function buildSVG() {
     body += '<rect x="' + it.a.x + '" y="' + it.a.y + '" width="' + it.s.w + '" height="' + it.s.h + '" rx="8"'
       + ' fill="#f2f6ff" fill-opacity="0.5" stroke="#7a8699" stroke-width="2" stroke-dasharray="8 5"/>';
   }
-  // layer 2: opaque node backgrounds
+  // layer 2: opaque node backgrounds (shape geometry from the registry)
   for (const it of nodeList) {
     if (it.container) continue;
-    body += '<rect x="' + it.a.x + '" y="' + it.a.y + '" width="' + it.s.w + '" height="' + it.s.h + '" rx="8"'
-      + ' fill="#ffffff" stroke="#7a8699" stroke-width="2"/>';
+    const paths = D2SHP.renderShape(it.n.shape || null, { x: it.a.x, y: it.a.y, w: it.s.w, h: it.s.h });
+    for (const d of paths) {
+      body += '<path d="' + d + '" fill="#ffffff" stroke="#7a8699" stroke-width="2"/>';
+    }
   }
   // layer 3: edges with labels
   for (const it of edgeList) {
@@ -1162,7 +1212,8 @@ function buildSVG() {
     const { n, a, s, container } = it;
     const x = a.x, y = a.y;
     const label = n.label != null ? String(n.label) : "";
-    const font = (container ? "700 " : "600 ") + "18px " + SVG_FONT;
+    const bottom = !container && shapeLabelBottom(n);
+    const font = container ? "700 18px " + SVG_FONT : (bottom ? "500 13px " + SVG_FONT : "600 18px " + SVG_FONT);
     const wrapMax = container ? Math.max(20, s.w - 30) : Math.max(20, s.w - 16);
     const lines = wrapLabel(label, wrapMax, font);
     const m = svgFontMetrics(font);
@@ -1171,6 +1222,14 @@ function buildSVG() {
       for (let i = 0; i < lines.length; i++) {
         body += '<text x="' + (x + 14) + '" y="' + (startY + i * SVG_LINE_H) + '" font-family="' + SVG_FONT
           + '" font-size="18" font-weight="700" fill="#3b5fbd">' + esc(lines[i]) + '</text>';
+      }
+    } else if (bottom) {
+      const cx = x + s.w / 2;
+      const fontSize = 13;
+      for (let i = 0; i < lines.length; i++) {
+        const ly2 = y + s.h - 10 - (lines.length - 1 - i) * SVG_LINE_H + (m.ascent - m.descent) / 2;
+        body += '<text x="' + cx + '" y="' + ly2 + '" text-anchor="middle" font-family="' + SVG_FONT
+          + '" font-size="' + fontSize + '" font-weight="500" fill="#1f2430">' + esc(lines[i]) + '</text>';
       }
     } else {
       const cx = x + s.w / 2, cy = y + s.h / 2;
