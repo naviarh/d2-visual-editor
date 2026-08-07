@@ -445,3 +445,60 @@ test("parity: array-value nodes carry markers on the value line", () => {
   assert.equal(serializeAnnotated(g), "x: [a, b] # @d2pos 4,90");
   assert.equal(stripMarkers(serializeAnnotated(g)), serializeClean(g), "parity: annotated = clean + markers");
 });
+
+test("shape: emitted right after label; round-trip and annotated parity", () => {
+  const g = {
+    v: 2,
+    nodes: [{ id: "x", label: "X", shape: "diamond", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true }],
+    edges: [],
+    order: ["x"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "x: {\n  label: X\n  shape: diamond\n}");
+  assert.equal(stripMarkers(serializeAnnotated(g)), serializeClean(g), "annotated = clean + markers");
+  const r = parseD2(serializeClean(g));
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].shape, "diamond");
+  assert.equal(serializeClean(r.graph), serializeClean(g), "stable under re-serialize");
+});
+
+test("shape with no label / unknown name: emitted, never duplicated with legacy rawAttrs", () => {
+  const g = {
+    v: 2,
+    nodes: [
+      { id: "a", label: "a", shape: "cylinder", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: ["shape: cylinder", "tooltip: t"], hasPos: true },
+      { id: "b", label: "b", shape: "foo bar", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true }
+    ],
+    edges: [],
+    order: ["a", "b"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  const out = serializeClean(g);
+  assert.equal(out, "a: {\n  shape: cylinder\n  tooltip: t\n}\nb: {\n  shape: foo bar\n}");
+  const r = parseD2(out);
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].shape, "cylinder");
+  assert.deepEqual(r.graph.nodes[0].rawAttrs, ["tooltip: t"]);
+  assert.equal(r.graph.nodes[1].shape, "foo bar");
+  assert.equal(serializeClean(r.graph), out, "stable under re-serialize");
+});
+
+test("valueArray node with shape emits two merged declarations (d2 form)", () => {
+  const g = {
+    v: 2,
+    nodes: [{ id: "x", label: null, valueArray: "[a]", shape: "diamond", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true }],
+    edges: [],
+    order: ["x"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "x: [a]\nx: {\n  shape: diamond\n}");
+  const r = parseD2(serializeClean(g));
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const x = r.graph.nodes.find((n) => n.id === "x");
+  assert.equal(x.valueArray, "[a]");
+  assert.equal(x.shape, "diamond");
+  assert.equal(serializeClean(r.graph), serializeClean(g), "stable under re-serialize");
+});

@@ -659,6 +659,10 @@
       }
       var v = parseValue();
       var isLabel = key === "label";
+      // `shape` applies to nodes only (edges have no `children`); array and
+      // block-string values stay in rawAttrs losslessly (d2 ignores edge shape
+      // and rejects composite shape values at render time).
+      var isShape = key === "shape" && Array.isArray(target.children);
       if (isLabel) {
         if (v != null) {
           if (v.type === "block") {
@@ -671,6 +675,10 @@
             target.label = v;
           }
         }
+      } else if (isShape && v != null && v.type !== "block" && v.type !== "array") {
+        // Keep the raw value (case and unknown names preserved); the renderer
+        // treats absent/unknown shapes as `rectangle` (fallback).
+        target.shape = String(v.value != null ? v.value : v);
       } else if (v != null && v.type === "block") {
         // Block string value for a non-label attribute: preserve the source
         // form in rawAttrs (content re-emitted with a stable indent).

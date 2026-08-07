@@ -139,7 +139,8 @@ test("rich annotated code: label, rawAttrs, comments, header/trailing, trailingC
   assert.deepEqual([client.x, client.y, client.hasPos], [60, 300, true]);
   const srv = g.nodes.find((n) => n.id === "srv");
   assert.equal(srv.label, "Backend API");
-  assert.deepEqual(srv.rawAttrs, ["shape: cylinder"]);
+  assert.equal(srv.shape, "cylinder");
+  assert.deepEqual(srv.rawAttrs, []);
   const db = g.nodes.find((n) => n.id === "db");
   assert.deepEqual([db.x, db.y, db.hasPos, db.parentId], [40, 60, true, "srv"]);
   const e = g.edges[0];
@@ -241,7 +242,8 @@ test("reserved attrs become node fields/rawAttrs, others become children", () =>
   const g = r.graph;
   const a = g.nodes.find((n) => n.id === "a");
   assert.equal(a.label, "hi");
-  assert.deepEqual(a.rawAttrs, ["shape: cylinder"]);
+  assert.equal(a.shape, "cylinder");
+  assert.deepEqual(a.rawAttrs, []);
   const child = g.nodes.find((n) => n.id === "child");
   assert.equal(child.parentId, "a");
   assert.equal(child.label, "val");
@@ -900,4 +902,40 @@ test("same local name on both sides of an edge is a parse error, not a corrupt g
   const r = parseD2("a.x -> b.x\n");
   assert.ok(!r.ok, "expected duplicate-name error");
   assert.ok(/дубликат имени узла 'x'/.test(r.error.message), r.error.message);
+});
+
+test("shape: value becomes a node field (case preserved); top-level shape: is a node", () => {
+  const r = parseD2("x: a {\n  shape: Diamond\n}\nshape: foo\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const g = r.graph;
+  const x = g.nodes.find((n) => n.id === "x");
+  assert.equal(x.shape, "Diamond", "raw case preserved");
+  assert.deepEqual(x.rawAttrs, [], "shape leaves rawAttrs");
+  const sh = g.nodes.find((n) => n.id === "shape");
+  assert.ok(sh, "top-level shape: is a node, not an attribute");
+  assert.equal(sh.label, "foo");
+});
+
+test("shape on edges / as array / as block string stays in rawAttrs", () => {
+  const r = parseD2("a -> b: { shape: diamond }\nc: { shape: [x] }\nd: { shape: |md\n   text\n  | }\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const g = r.graph;
+  const e = g.edges[0];
+  assert.equal(e.shape, undefined, "edges have no shape field");
+  assert.deepEqual(e.rawAttrs, ["shape: diamond"]);
+  const c = g.nodes.find((n) => n.id === "c");
+  assert.equal(c.shape, undefined, "array shape value is not a field");
+  assert.deepEqual(c.rawAttrs, ["shape: [x]"]);
+  const d = g.nodes.find((n) => n.id === "d");
+  assert.equal(d.shape, undefined, "block-string shape value is not a field");
+  assert.ok(d.rawAttrs.length === 1 && d.rawAttrs[0].startsWith("shape: |"), JSON.stringify(d.rawAttrs));
+});
+
+test("shape on a container applies to the container node", () => {
+  const r = parseD2("a: {\n  shape: cloud\n  b\n}\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const g = r.graph;
+  const a = g.nodes.find((n) => n.id === "a");
+  assert.equal(a.shape, "cloud");
+  assert.deepEqual(a.rawAttrs, []);
 });

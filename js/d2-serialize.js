@@ -214,6 +214,13 @@
       if (kid) kids.push(kid);
     }
     var raw = n.rawAttrs || [];
+    var hasShape = n.shape != null;
+    if (hasShape) {
+      // Legacy graphs may carry `shape:` inside rawAttrs; never emit twice.
+      raw = raw.filter(function (r) {
+        return String(r).split("\n")[0].trim().indexOf("shape:") !== 0;
+      });
+    }
     var lb = n.labelBlock;
     var plainLabel = n.label != null && n.label !== n.id;
     if (!lb && plainLabel && String(n.label).indexOf("\n") !== -1) {
@@ -222,11 +229,26 @@
     }
     var blockLabel = !!lb;
     plainLabel = plainLabel && !blockLabel;
-    if (kids.length || raw.length) {
+    if (n.valueArray) {
+      // An attribute-array value: `key: [a, b]` (never a label in D2). d2 has
+      // no single-line form for array + attrs, so a shape/raw/kids payload is
+      // emitted as a second merged declaration (d2 merges by path).
+      lines.push(ind + key + ": " + n.valueArray + lineSuffix(n, annotated));
+      if (kids.length || raw.length || hasShape) {
+        lines.push(ind + key + ": {" + lineSuffix(n, annotated));
+        if (hasShape) lines.push(ind + "  shape: " + d2Value(n.shape));
+        for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
+        for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
+        lines.push(ind + "}");
+      }
+      return;
+    }
+    if (kids.length || raw.length || hasShape) {
       var open = ind + key + ": {" + lineSuffix(n, annotated);
       lines.push(open);
       if (blockLabel) emitBlockString(lines, ind + "  label: ", lb);
       else if (plainLabel) lines.push(ind + "  label: " + d2Value(n.label));
+      if (hasShape) lines.push(ind + "  shape: " + d2Value(n.shape));
       for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
       for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
       lines.push(ind + "}");
@@ -236,11 +258,6 @@
       // Node's own value is a block string: emit `key: |quote tag … |`.
       var bi = emitBlockString(lines, ind + key + ": ", lb);
       lines[bi] += lineSuffix(n, annotated);
-      return;
-    }
-    if (n.valueArray) {
-      // An attribute-array value: `key: [a, b]` (never a label in D2).
-      lines.push(ind + key + ": " + n.valueArray + lineSuffix(n, annotated));
       return;
     }
     if (plainLabel) {
