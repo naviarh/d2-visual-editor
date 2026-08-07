@@ -424,6 +424,101 @@ test("D2 string parity: syntax errors match v0.7.1 line/col behavior", () => {
   }
 });
 
+test("stage D: $ substitutions error with d2-parity line/col", () => {
+  const cases = [
+    ["x: $var\n", 1, 4],
+    ["x: 5$foo\n", 1, 5],
+    ["x: a$b\n", 1, 5],
+    ["x: ${a}\n", 1, 4],
+    ['x: "a$b"\n', 1, 6],
+    ['x: "${a}"\n', 1, 5]
+  ];
+  for (const [src, line, col] of cases) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, "should fail: " + src);
+    assert.ok(/подстановки \(\$\) не поддерживаются/.test(r.error.message), src + " -> " + r.error.message);
+    assert.equal(r.error.line, line, src);
+    assert.equal(r.error.col, col, src);
+  }
+});
+
+test("stage D: $ variable declarations/references in keys error", () => {
+  const cases = [
+    ["$x: 1\n", 1, 1],
+    ["$x -> y\n", 1, 1],
+    ["a: { $y: 1 }\n", 1, 6]
+  ];
+  for (const [src, line, col] of cases) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, "should fail: " + src);
+    assert.ok(/переменные \(\$\) не поддерживаются/.test(r.error.message), src + " -> " + r.error.message);
+    assert.equal(r.error.line, line, src);
+    assert.equal(r.error.col, col, src);
+  }
+  const subst = parseD2("a${b}: 1\n");
+  assert.equal(subst.ok, false, "mid-key ${ is a substitution");
+  assert.ok(/подстановки \(\$\) не поддерживаются/.test(subst.error.message), subst.error.message);
+  assert.equal(subst.error.col, 2, "points at the $");
+});
+
+test("stage D: * globs in keys error (values keep * literal)", () => {
+  const cases = [
+    ["a*b: 1\n", 1, 2],
+    ["*a -> b\n", 1, 1],
+    ["*: x\n", 1, 1],
+    ["a: { * -> b }\n", 1, 6]
+  ];
+  for (const [src, line, col] of cases) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, "should fail: " + src);
+    assert.ok(/globs \(\*\) не поддерживаются/.test(r.error.message), src + " -> " + r.error.message);
+    assert.equal(r.error.line, line, src);
+    assert.equal(r.error.col, col, src);
+  }
+});
+
+test("stage D: import spread ...@ errors at token start", () => {
+  const cases = [
+    ["...@import\n", 1, 1],
+    ["x: ...@y\n", 1, 4],
+    ["x ...@y\n", 1, 3]
+  ];
+  for (const [src, line, col] of cases) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, "should fail: " + src);
+    assert.ok(/import spread \(\.\.\.\) не поддерживается/.test(r.error.message), src + " -> " + r.error.message);
+    assert.equal(r.error.line, line, src);
+    assert.equal(r.error.col, col, src);
+  }
+});
+
+test("stage D: $, * and ... stay literal where d2 keeps them literal", () => {
+  const cases = [
+    ["x: a*b", "a*b"],
+    ["x: a\\$b", "a$b"],
+    ["x: 'a$b'", "a$b"],
+    ['x: "a\\$b"', "a$b"],
+    ["x: 'a*b'", "a*b"],
+    ['x: "a*b"', "a*b"],
+    ["x: a...b", "a...b"],
+    ["x: |md\n$foo * bar\n|", "$foo * bar"]
+  ];
+  for (const [src, label] of cases) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    assert.equal(r.graph.nodes[0].label, label, src);
+  }
+  const k1 = parseD2("a$b: 1\n");
+  assert.ok(k1.ok, JSON.stringify(k1.error));
+  assert.equal(k1.graph.nodes[0].id, "a$b", "mid-key $ is a literal key name");
+  const k2 = parseD2("a$: 1\n");
+  assert.ok(k2.ok, JSON.stringify(k2.error));
+  assert.equal(k2.graph.nodes[0].id, "a$", "trailing $ in a key is a literal");
+  const edge = parseD2("a -* b\n");
+  assert.ok(edge.ok, JSON.stringify(edge.error));
+  assert.deepEqual(edge.graph.edges.map((e) => [e.source, e.target]), [["a", "b"]], "-* arrow does not trip the glob check");
+});
+
 test("D2 string parity: parse -> serialize -> parse is stable for string forms", () => {
   const sources = [
     "x: don't\n",
@@ -435,7 +530,12 @@ test("D2 string parity: parse -> serialize -> parse is stable for string forms",
     "x: a { b }\n",
     "x: a.b\n",
     '"a b": x\n',
-    "a-b -> c\n"
+    "a-b -> c\n",
+    "x: a\\$b\n",
+    "a$b: 1\n",
+    "x: a...b\n",
+    "x: 'a*b'\n",
+    "a -* b\n"
   ];
   for (const src of sources) {
     const g1 = parseD2(src);
@@ -708,7 +808,11 @@ test("d2 CLI: parsed round-trips (clean and annotated) compile to identical stru
     '"b.c" -> x\n',
     "intro: |md\n# heading\nsome **text**\n|\n",
     "notes: {\n  label: |md\n  **bold**\n  |\n  tooltip: |md\n  custom tip\n  |\n}\n",
-    "a -> b: |md\nedge block\n|\n"
+    "a -> b: |md\nedge block\n|\n",
+    "x: a*b\n",
+    "a$b: 1\n",
+    "x: a...b\n",
+    "x: 'a$b'\n"
   ];
   const dir = await mkdtemp(join(tmpdir(), "d2parse-"));
   try {

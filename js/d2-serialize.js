@@ -6,7 +6,9 @@
   function d2Key(s) {
     var str = String(s);
     if (/^[A-Za-z0-9_]+$/.test(str)) return str;
-    return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    // `$` is escaped inside double quotes: d2 reads `"a$b"` as a substitution
+    // in values, `"a\$b"` decodes to the literal `a$b`.
+    return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$") + '"';
   }
 
   function indexNodes(graph) {

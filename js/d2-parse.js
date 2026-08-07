@@ -138,6 +138,13 @@
       }
       if (ch === " " || ch === "\t") { advance(ch); continue; }
 
+      // Stage D: import spread (`...@`) is recognized but unsupported. d2 only
+      // allows it at the start of an unquoted string (statement or value); a
+      // `...@` mid-word is plain text (`x: a...@b`).
+      if (ch === "." && src[i + 1] === "." && src[i + 2] === "." && src[i + 3] === "@") {
+        return { error: { line: startLine, col: startCol, message: "import spread (...) не поддерживается" } };
+      }
+
       if (ch === "#") {
         var cs = i;
         while (i < n && src[i] !== "\n") advance(src[i]);
@@ -258,6 +265,11 @@
             }
             continue;
           }
+          // Stage D: raw $ in double quotes starts a substitution in d2
+          // (single quotes keep it literal) — unsupported here.
+          if (c === "$" && q === '"') {
+            return { error: { line: qLine, col: qCol + (i - qs), message: "подстановки ($) не поддерживаются" } };
+          }
           val += c;
           advance(c);
         }
@@ -317,6 +329,22 @@
           buf += decodeEscape(nx);
           advance(c2); advance(src[i]);
           continue;
+        }
+        // Stage D: $ substitutions and * globs are recognized but unsupported.
+        // Raw chars only — `\$` (escaped) and single-quoted strings stay
+        // literal, and `*` is plain text inside values.
+        if (c2 === "$" && (inValue || buf.length === 0 || src[i + 1] === "{")) {
+          return {
+            error: {
+              line: wordLine, col: wordCol + (i - is),
+              message: (inValue || src[i + 1] === "{")
+                ? "подстановки ($) не поддерживаются"
+                : "переменные ($) не поддерживаются"
+            }
+          };
+        }
+        if (!inValue && c2 === "*") {
+          return { error: { line: wordLine, col: wordCol + (i - is), message: "globs (*) не поддерживаются" } };
         }
         buf += c2;
         advance(c2);

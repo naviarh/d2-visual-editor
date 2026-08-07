@@ -57,6 +57,8 @@ test("d2Key: plain keys unquoted, others quoted+escaped", () => {
   assert.equal(d2Key("API Server"), '"API Server"');
   assert.equal(d2Key('a"b'), '"a\\"b"');
   assert.equal(d2Key("a\\b"), '"a\\\\b"');
+  assert.equal(d2Key("a$b"), '"a\\$b"', "$ escaped: d2 would read \"a$b\" as a substitution in values");
+  assert.equal(d2Key("$"), '"\\$"');
 });
 
 test("treeOrder: pre-order, roots first, children in order", () => {

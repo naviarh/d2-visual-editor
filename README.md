@@ -29,7 +29,7 @@ User -> Server -> Database
 ## Тесты
 
 ```bash
-npm test          # 136 юнит-тестов (node:test), без внешних зависимостей
+npm test          # 141 юнит-тестов (node:test), без внешних зависимостей
 npm run test:ui   # 15 E2E-сценариев (puppeteer-core; нужен системный Chrome)
 ```
 
