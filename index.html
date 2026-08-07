@@ -161,6 +161,7 @@
 <script src="js/d2-merge.js"></script>
 <script src="js/d2-layout.js"></script>
 <script src="js/d2-sort.js"></script>
+<script src="js/d2-shapes.js"></script>
 <script>
 "use strict";
 
@@ -170,6 +171,7 @@ const D2P = window.d2parse;
 const D2M = window.d2merge;
 const D2L = window.d2layout;
 const D2SORT = window.d2sort;
+const D2SHP = window.d2shapes;
 const pane = document.getElementById("pane");
 const viewportEl = document.getElementById("viewport");
 const nodesEl = document.getElementById("nodes");
@@ -523,17 +525,35 @@ function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function edgeGeometry(sa, ss, ta, ts) {
-  const scx = sa.x + ss.w / 2, scy = sa.y + ss.h / 2;
-  const tcx = ta.x + ts.w / 2, tcy = ta.y + ts.h / 2;
+// Shape-aware edge anchoring: source/target points land on the node's shape
+// contour (outline intersection), falling back to the axis-aligned box border
+// for containers and as a safety net.
+function nodeShapeBox(n, s) {
+  if (isContainer(n)) return { w: s.w, h: s.h, container: true, shape: null };
+  const norm = D2SHP.normalizeRatio(n.shape || null, s.w, s.h);
+  return { w: norm.w, h: norm.h, container: false, shape: n.shape || null };
+}
+
+function edgeGeometry(sa, ss, ta, ts, s, t) {
+  const sb = nodeShapeBox(s, ss), tb = nodeShapeBox(t, ts);
+  const scx = sa.x + sb.w / 2, scy = sa.y + sb.h / 2;
+  const tcx = ta.x + tb.w / 2, tcy = ta.y + tb.h / 2;
   const adx = tcx - scx, ady = tcy - scy;
-  const border = (cx, cy, hw, hh, dx, dy) => {
+  const border = (cx, cy, box, dx, dy) => {
     if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    if (!box.container) {
+      const outline = D2SHP.outlinePoints(box.shape, {
+        x: cx - box.w / 2, y: cy - box.h / 2, w: box.w, h: box.h
+      });
+      const hit = D2SHP.outlineIntersect(outline, cx, cy, dx, dy);
+      if (hit) return hit;
+    }
+    const hw = box.w / 2, hh = box.h / 2;
     const s = Math.min(hw / Math.abs(dx), hh / Math.abs(dy));
     return { x: cx + dx * s, y: cy + dy * s };
   };
-  const sp = border(scx, scy, ss.w / 2, ss.h / 2, adx, ady);
-  const tp = border(tcx, tcy, ts.w / 2, ts.h / 2, -adx, -ady);
+  const sp = border(scx, scy, sb, adx, ady);
+  const tp = border(tcx, tcy, tb, -adx, -ady);
   let spPos, tpPos;
   if (Math.abs(adx) > Math.abs(ady)) {
     spPos = adx > 0 ? XYF.Position.Right : XYF.Position.Left;
@@ -553,7 +573,7 @@ function renderEdges() {
     if (!s || !t) continue;
     const sa = absPos(s), ta = absPos(t);
     const ss = boxSize(s), ts = boxSize(t);
-    const g = edgeGeometry(sa, ss, ta, ts);
+    const g = edgeGeometry(sa, ss, ta, ts, s, t);
     const [path, lx, ly] = XYF.getSmoothStepPath({
       sourceX: g.sp.x, sourceY: g.sp.y, sourcePosition: g.spPos,
       targetX: g.tp.x, targetY: g.tp.y, targetPosition: g.tpPos
@@ -1099,7 +1119,7 @@ function buildSVG() {
   for (const ed of edges) {
     const s = nodes.get(ed.source), t = nodes.get(ed.target);
     if (!s || !t) continue;
-    const g = edgeGeometry(absPos(s), boxSize(s), absPos(t), boxSize(t));
+    const g = edgeGeometry(absPos(s), boxSize(s), absPos(t), boxSize(t), s, t);
     const [path, lx, ly] = XYF.getSmoothStepPath({
       sourceX: g.sp.x, sourceY: g.sp.y, sourcePosition: g.spPos,
       targetX: g.tp.x, targetY: g.tp.y, targetPosition: g.tpPos
