@@ -1315,7 +1315,7 @@ const DEFAULT_SEED = [
   "",
   'Client -> "API Server" {label: HTTPS}',
   '"API Server" -> Worker {label: queue}',
-  'Worker -> "API Server".Database {label: "read/write"}'
+  'Worker -> "API Server".Database {label: read/write}'
 ].join("\n");
 
 function seed() {

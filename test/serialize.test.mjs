@@ -9,7 +9,8 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const mod = require("../js/d2-serialize.js");
-const { d2Key, serializeClean, serializeAnnotated, stripMarkers, defaultOrder, treeOrder, POS_RE } = mod;
+const { d2Key, d2Value, d2Escape, serializeClean, serializeAnnotated, stripMarkers, defaultOrder, treeOrder, POS_RE } = mod;
+const { parseD2 } = require("../js/d2-parse.js");
 const exec = promisify(execFile);
 
 const demoGraph = {
@@ -80,7 +81,7 @@ test("serializeClean: demo graph", () => {
     "",
     'Client -> "API Server" {label: HTTPS}',
     '"API Server" -> Worker {label: queue}',
-    'Worker -> "API Server".Database {label: "read/write"}'
+    'Worker -> "API Server".Database {label: read/write}'
   ].join("\n"));
 });
 
@@ -90,7 +91,7 @@ test("serializeClean: rich graph (comments, label, rawAttrs, header/trailing)", 
     "# внешний клиент",
     "Client # front-end сервис",
     "srv: {",
-    '  label: "Backend API"',
+    "  label: Backend API",
     "  shape: cylinder",
     "  db",
     "}",
@@ -194,7 +195,7 @@ test("child before parent in order: parent hoisted, each node emitted once", () 
     "",
     'Client -> "API Server" {label: HTTPS}',
     '"API Server" -> Worker {label: queue}',
-    'Worker -> "API Server".Database {label: "read/write"}'
+    'Worker -> "API Server".Database {label: read/write}'
   ].join("\n"));
 });
 
@@ -331,4 +332,88 @@ test("block string edge label with trailing comment on the closer", () => {
     idCounter: 2, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
   };
   assert.equal(serializeClean(g), "a\nb\n\na -> b: |md\n  x\n| # note");
+});
+
+test("d2Value: unquoted when safe, quoted+escaped otherwise", () => {
+  const safe = ["read/write", "HTTPS 2", "Backend API", "a:b", "a.b", "-x", "*glob", "C++", "просто тест"];
+  for (const v of safe) {
+    assert.equal(d2Value(v), v, "kept unquoted: " + JSON.stringify(v));
+  }
+  const quoted = [
+    ["", '""'],
+    ['a#b', '"a#b"'],
+    ['a$b', '"a\\$b"'],
+    ['a\\b', '"a\\\\b"'],
+    ['a;b', '"a;b"'],
+    ['{x}', '"{x}"'],
+    ['"x"', '"\\"x\\""'],
+    ["a b ", '"a b "'],
+    [" a b", '" a b"'],
+    ['|x', '"|x"'],
+    ["$x", '"\\$x"'],
+    ["...@y", '"...@y"']
+  ];
+  for (const [input, expected] of quoted) {
+    assert.equal(d2Value(input), expected, "quoted: " + JSON.stringify(input));
+  }
+});
+
+test("d2Escape: full D2 escape set, `$` and control chars", () => {
+  assert.equal(d2Escape('a"b'), 'a\\"b');
+  assert.equal(d2Escape("a\\b"), "a\\\\b");
+  assert.equal(d2Escape("a$b"), "a\\$b");
+  assert.equal(d2Escape("a\tb"), "a\\tb");
+  assert.equal(d2Escape("a\rb"), "a\\rb");
+  assert.equal(d2Escape("a\bb"), "a\\bb");
+  assert.equal(d2Escape("a\fb"), "a\\fb");
+  assert.equal(d2Escape("a\vb"), "a\\vb");
+});
+
+test("round-trip: values with special chars re-parse to the same label", () => {
+  const srcs = [
+    "x: { label: \"a#b\" }\n",
+    "x: { label: \"a\\b\" }\n",
+    "x: { label: \"a;b\" }\n",
+    "a -> b {label: \"a#b\"}\n",
+    "x: { label: \"  pad  \" }\n"
+  ];
+  for (const src of srcs) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " " + JSON.stringify(r.error));
+    const out = serializeClean(r.graph);
+    const r2 = parseD2(out);
+    assert.ok(r2.ok, out + " " + JSON.stringify(r2.error));
+    assert.equal(serializeClean(r2.graph), out, "stable under re-serialize: " + out);
+  }
+});
+
+test("d2Value: multi-line label falls back to a block string when re-parsed", () => {
+  const src = "x: |md\n  line one\n  line two\n|";
+  const r = parseD2(src);
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const out = serializeClean(r.graph);
+  assert.ok(out.includes("|md"), "multi-line label emitted as a block: " + JSON.stringify(out));
+  const r2 = parseD2(out);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  const label = r2.graph.nodes.find((n) => n.id === "x").label;
+  assert.equal(label, "line one\nline two");
+});
+
+test("graph label with newline but no labelBlock is emitted as a block string", () => {
+  const g = {
+    v: 2,
+    nodes: [{
+      id: "x", label: "l1\nl2", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [],
+      comments: [], trailingComment: null, rawAttrs: []
+    }],
+    edges: [],
+    order: ["x"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "x: |-md\n  l1\n  l2\n-|");
+  const r = parseD2(serializeClean(g));
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].label, "l1\nl2");
+  assert.equal(serializeClean(r.graph), serializeClean(g), "stable");
 });

@@ -61,7 +61,7 @@ const DEMO_CLEAN = [
   "",
   'Client -> "API Server" {label: HTTPS}',
   '"API Server" -> Worker {label: queue}',
-  'Worker -> "API Server".Database {label: "read/write"}'
+  'Worker -> "API Server".Database {label: read/write}'
 ].join("\n");
 
 const DEMO_ANNOTATED = [
@@ -74,7 +74,7 @@ const DEMO_ANNOTATED = [
   "",
   'Client -> "API Server" {label: HTTPS}',
   '"API Server" -> Worker {label: queue}',
-  'Worker -> "API Server".Database {label: "read/write"}'
+  'Worker -> "API Server".Database {label: read/write}'
 ].join("\n");
 
 test("parseD2: demo clean code -> exact graph (no positions)", () => {

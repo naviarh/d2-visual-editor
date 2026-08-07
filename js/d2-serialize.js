@@ -3,12 +3,54 @@
 
   var POS_RE = /#\s*@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
 
+  // D2 escapes for double-quoted emission: backslash, quote, `$` (a
+  // substitution start in values) and the control chars of the D2 escape set.
+  // A real newline is intentionally NOT emitted here — d2 would decode `\n`
+  // inside quotes to a line break and fail to close the string; multi-line
+  // values are emitted as block strings by the callers.
+  function d2Escape(s) {
+    return String(s)
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, "\\$")
+      .replace(/\x08/g, "\\b")
+      .replace(/\x09/g, "\\t")
+      .replace(/\x0A/g, "\\n")
+      .replace(/\x0B/g, "\\v")
+      .replace(/\x0C/g, "\\f")
+      .replace(/\x0D/g, "\\r");
+  }
+
   function d2Key(s) {
     var str = String(s);
     if (/^[A-Za-z0-9_]+$/.test(str)) return str;
-    // `$` is escaped inside double quotes: d2 reads `"a$b"` as a substitution
-    // in values, `"a\$b"` decodes to the literal `a$b`.
-    return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$") + '"';
+    return '"' + d2Escape(str) + '"';
+  }
+
+  // An unquoted D2 value must re-parse to the same string: no value
+  // terminators (§2.2), no `$`/`\` (substitution/escape), no surrounding
+  // whitespace (trimmed on parse) and a first char that would not open a
+  // quoted/block/import token.
+  function unquotedSafeValue(s) {
+    if (s === "") return false;
+    var c0 = s.charAt(0);
+    if (c0 === " " || c0 === "\t" || c0 === '"' || c0 === "'" || c0 === "|" || c0 === "$") return false;
+    var last = s.charAt(s.length - 1);
+    if (last === " " || last === "\t") return false;
+    if (s.indexOf("...@") === 0) return false;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (ch === "\r" || ch === "\n" || ch === ";" || ch === "#" ||
+          ch === "{" || ch === "}" || ch === "[" || ch === "]" ||
+          ch === "$" || ch === "\\") return false;
+    }
+    return true;
+  }
+
+  function d2Value(s) {
+    var str = String(s);
+    if (unquotedSafeValue(str)) return str;
+    return '"' + d2Escape(str) + '"';
   }
 
   function indexNodes(graph) {
@@ -172,13 +214,19 @@
       if (kid) kids.push(kid);
     }
     var raw = n.rawAttrs || [];
-    var blockLabel = !!n.labelBlock;
-    var plainLabel = !blockLabel && n.label != null && n.label !== n.id;
+    var lb = n.labelBlock;
+    var plainLabel = n.label != null && n.label !== n.id;
+    if (!lb && plainLabel && String(n.label).indexOf("\n") !== -1) {
+      // A multi-line label without a parsed block: emit it as a block string.
+      lb = { tag: "md", quote: "-", value: String(n.label) };
+    }
+    var blockLabel = !!lb;
+    plainLabel = plainLabel && !blockLabel;
     if (kids.length || raw.length) {
       var open = ind + key + ": {" + lineSuffix(n, annotated);
       lines.push(open);
-      if (blockLabel) emitBlockString(lines, ind + "  label: ", n.labelBlock);
-      else if (plainLabel) lines.push(ind + "  label: " + d2Key(n.label));
+      if (blockLabel) emitBlockString(lines, ind + "  label: ", lb);
+      else if (plainLabel) lines.push(ind + "  label: " + d2Value(n.label));
       for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
       for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
       lines.push(ind + "}");
@@ -186,13 +234,13 @@
     }
     if (blockLabel) {
       // Node's own value is a block string: emit `key: |quote tag … |`.
-      var bi = emitBlockString(lines, ind + key + ": ", n.labelBlock);
+      var bi = emitBlockString(lines, ind + key + ": ", lb);
       lines[bi] += lineSuffix(n, annotated);
       return;
     }
     if (plainLabel) {
       lines.push(ind + key + ": {" + lineSuffix(n, annotated));
-      lines.push(ind + "  label: " + d2Key(n.label));
+      lines.push(ind + "  label: " + d2Value(n.label));
       lines.push(ind + "}");
       return;
     }
@@ -214,13 +262,18 @@
     var src = nodePath(byId, ed.source).map(d2Key).join(".");
     var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
     var line = src + " -> " + tgt;
-    if (ed.labelBlock) {
-      var bi = emitBlockString(lines, line + ": ", ed.labelBlock);
+    var lb = ed.labelBlock;
+    var plainLabel = ed.label;
+    if (!lb && plainLabel && String(ed.label).indexOf("\n") !== -1) {
+      lb = { tag: "md", quote: "-", value: String(ed.label) };
+    }
+    if (lb) {
+      var bi = emitBlockString(lines, line + ": ", lb);
       if (ed.trailingComment) lines[bi] += " # " + ed.trailingComment;
       return;
     }
     var attrs = [];
-    if (ed.label) attrs.push("label: " + d2Key(ed.label));
+    if (plainLabel) attrs.push("label: " + d2Value(ed.label));
     for (var r = 0; r < (ed.rawAttrs || []).length; r++) attrs.push(ed.rawAttrs[r]);
     if (attrs.length === 1) {
       line += " {" + attrs[0] + "}";
@@ -254,6 +307,8 @@
   var api = {
     POS_RE: POS_RE,
     d2Key: d2Key,
+    d2Value: d2Value,
+    d2Escape: d2Escape,
     indexNodes: indexNodes,
     indexEdges: indexEdges,
     nodePath: nodePath,
