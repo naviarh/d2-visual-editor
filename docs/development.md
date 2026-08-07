@@ -16,7 +16,7 @@ xdg-open index.html
 python3 -m http.server 8080   # затем http://localhost:8080
 
 # тесты
-npm test                      # 106 юнит-тестов (node:test)
+npm test                      # 136 юнит-тестов (node:test)
 npm run test:ui               # 15 E2E-сценариев (puppeteer-core)
 CHROME=/path/to/chrome npm run test:ui   # переопределить Chrome
 ```
@@ -84,7 +84,7 @@ const { parseD2 } = require("../js/d2-parse.js");
 - **Экспорт в SVG** (`export-svg`, `buildSVG`): самодостаточный векторный документ без `foreignObject` — рёбра как `<path>` + `<marker>`, блоки как `<rect>` (`rx=8`, у контейнеров `stroke-dasharray`), все стили инлайн-атрибутами, шрифты только из системного стека, белый фон, `viewBox` по bounding-box всех элементов + отступ 40px. Текст с переносом: `wrapLabel` меряет ширину через canvas `measureText` и рендерит строки как отдельные `<text>`; baseline считается из `actualBoundingBoxAscent/Descent` (без `dominant-baseline` ради совместимости); подпись ребра — два слоя `<text>` (белая обводка + тёмная заливка) вместо `paint-order`. **Порядок слоёв** (важно, покрыто тестом): фон контейнеров → фоны блоков → рёбра+подписи рёбер → подписи блоков, чтобы стрелки внутри групп не перекрывались полупрозрачной заливкой; подписи без `label` у ребра не выводятся (`label != null`, а не truthy-проверка — `String(null)` даёт `"null"`).
 - **Headless-ограничения**: `navigator.clipboard.writeText` в headless на `file://` отклоняется (`NotAllowedError`) — для чтения буфера в тестах стаб `navigator.clipboard.readText`; нативный диалог сохранения не автоматизируется — `showSaveFilePicker` стабится фейковым handle (перехватывает `write`), fallback-путь проверяется стабом `URL.createObjectURL`/`HTMLAnchorElement.prototype.click`.
 
-### Что покрыто (106 тестов)
+### Что покрыто (136 тестов)
 
 - `parse`: квотинг, пробелы в ключах, вложенность, пути, рёбра/цепочки/списки, `#` и `//` комментарии, `@d2pos` + `trailingComment`, заголовочные/хвостовые комментарии, `rawAttrs`, `style`-блок, ошибки синтаксиса, пустой ввод.
 - `serialize`: паритет clean/annotated, `stripMarkers`, `POS_RE` (якорь конца строки), целые координаты, порядок по `order` (hoisting родителя, дубликаты id, циклы parentId), d2 CLI-паритет.

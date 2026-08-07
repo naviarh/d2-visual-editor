@@ -95,6 +95,25 @@
     return 0;
   }
 
+  // d2parser parseBlockString: symbol quote chars stop at whitespace, alnum
+  // and underscore; the trailing `|` in `|--|` is part of the quote.
+  function blockQuoteEndsAt(c) {
+    return c === " " || c === "\t" || c === "\n" || c === "\r" || c === "_" ||
+      (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9");
+  }
+
+  function blockTagEndsAt(c) {
+    return c === "." || c === "_" || c === "-" ||
+      (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9");
+  }
+
+  // Closing sequence of a block string: last quote char + quote[1:] + "|";
+  // with no quote chars it is a single `|` (any `|` terminates, like d2).
+  function blockStringCloser(quote) {
+    if (!quote) return "|";
+    return quote.charAt(quote.length - 1) + quote.slice(1) + "|";
+  }
+
   // Context-aware string lexer. `inValue` is true while scanning a value
   // (after `:`), which widens the word terminator set to D2 value rules.
   function tokenize(src) {
@@ -153,6 +172,53 @@
         }
         var btext = trimCommonIndent(trimSpaceAfterLastNewline(bbuf));
         tokens.push({ type: "comment", text: btext, line: bLine, col: bCol, block: true });
+        inValue = false;
+        continue;
+      }
+
+      // D2 parseBlockString: `|` in value position opens a block string.
+      // `|quote tag` opens, content runs until the closing sequence
+      // (last quote char + quote[1:] + "|"; a bare `|` when quote is empty).
+      if (ch === "|" && inValue) {
+        var bsLine = startLine, bsCol = startCol, bsStart = i;
+        advance(ch);
+        var bq = "";
+        while (i < n && !blockQuoteEndsAt(src[i])) { bq += src[i]; advance(src[i]); }
+        var bt = "";
+        while (i < n && blockTagEndsAt(src[i])) { bt += src[i]; advance(src[i]); }
+        if (!bt) bt = "md";
+        while (i < n && (src[i] === " " || src[i] === "\t")) advance(src[i]);
+        var bsSame = false;
+        if (i < n && src[i] !== "\n" && src[i] !== "\r") {
+          bsSame = true;
+        } else if (i < n) {
+          advance(src[i]);
+        }
+        var bbuf = "";
+        var bclosed = false;
+        var bh = "|", br = "";
+        if (bq) { bh = bq.charAt(bq.length - 1); br = bq.slice(1) + "|"; }
+        while (i < n) {
+          var bc = src[i];
+          if (bc === bh) {
+            if (br === "" || src.substr(i + 1, br.length) === br) {
+              var bsCloseLine = line, bsCloseCol = col;
+              advance(bc);
+              for (var bri = 0; bri < br.length; bri++) advance(src[i]);
+              bclosed = true;
+              break;
+            }
+            bbuf += bc;
+            advance(bc);
+          } else {
+            bbuf += bc;
+            advance(bc);
+          }
+        }
+        if (!bclosed) {
+          return { error: { line: bsLine, col: bsCol, message: "незакрытая блочная строка (ожидается " + blockStringCloser(bq) + ")" } };
+        }
+        tokens.push({ type: "block", tag: bt, quote: bq, content: bbuf, sameLine: bsSame, line: bsLine, col: bsCol, endLine: bsCloseLine, endCol: bsCloseCol, off: bsStart, end: i });
         inValue = false;
         continue;
       }
@@ -301,7 +367,15 @@
     }
 
     function peek() { return tokens[pos]; }
-    function next() { var t = tokens[pos++]; if (t) { lastLine = t.line; lastCol = t.col; } return t; }
+    function next() {
+      var t = tokens[pos++];
+      if (t) {
+        // A block string ends at its closing line, not its opener.
+        if (t.endLine != null) { lastLine = t.endLine; lastCol = t.endCol; }
+        else { lastLine = t.line; lastCol = t.col; }
+      }
+      return t;
+    }
     function peekIs(v) { var t = peek(); return !!t && t.type === "punct" && t.value === v; }
     function isArrow() { var t = peek(); return !!t && t.type === "arrow"; }
     function skipNl() { while (peek() && peek().type === "nl") next(); }
@@ -460,10 +534,19 @@
       return out;
     }
 
+    function blockValue(t) {
+      var content = t.content;
+      // A first content line on the opener's own line implicitly gets the
+      // current nesting indent (d2parser getIndent = depth*2 spaces).
+      if (t.sameLine) content = "  ".repeat(curDepth() * 2) + content;
+      return trimCommonIndent(trimSpaceAfterLastNewline(content));
+    }
+
     function parseValue() {
       var t = peek();
       if (!t) return null;
       if (t.type === "str") { next(); return t.value; }
+      if (t.type === "block") { next(); t.value = blockValue(t); return t; }
       if (t.type === "punct" && t.value === "[") {
         var startOff = t.off;
         var depth = 0;
@@ -549,7 +632,19 @@
       var v = parseValue();
       var isLabel = key === "label";
       if (isLabel) {
-        if (v != null) target.label = v;
+        if (v != null) {
+          if (v.type === "block") {
+            target.label = v.value;
+            target.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+          } else {
+            target.label = v;
+          }
+        }
+      } else if (v != null && v.type === "block") {
+        // Block string value for a non-label attribute: preserve the source
+        // form in rawAttrs (content re-emitted with a stable indent).
+        var parts = String(v.value || "").split("\n").map(function (l) { return "  " + l; });
+        target.rawAttrs.push(key + ": |" + v.quote + v.tag + "\n" + parts.join("\n") + "\n" + blockStringCloser(v.quote));
       } else {
         target.rawAttrs.push(key + (v != null ? ": " + v : ":"));
       }
@@ -644,7 +739,15 @@
           parseEdgeAttrBlock(edges[edges.length - 1]);
         } else {
           var v = parseValue();
-          if (v != null) edges[edges.length - 1].label = v;
+          if (v != null) {
+            var le = edges[edges.length - 1];
+            if (v.type === "block") {
+              le.label = v.value;
+              le.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+            } else {
+              le.label = v;
+            }
+          }
         }
       } else if (t && t.type === "punct" && t.value === "{") {
         parseEdgeAttrBlock(edges[edges.length - 1]);
@@ -674,7 +777,12 @@
         var v = parseValue();
         if (v == null) { errorAt(peek(), "ожидается значение после ':'"); }
         var cn = declareNode(pathTokens);
-        cn.label = v;
+        if (v && v.type === "block") {
+          cn.label = v.value;
+          cn.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+        } else {
+          cn.label = v;
+        }
         // `x: a { b }` — value becomes the label, `{ b }` the container
         // (valid in D2 only when `{` is on the same line).
         if (peekIs("{") && peek().line === lastLine) {

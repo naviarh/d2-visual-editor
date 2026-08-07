@@ -484,6 +484,113 @@ test("blank line separates # comment runs (d2 parseComment)", () => {
   assert.deepEqual(r.graph.headerComments, ["one", "two"]);
 });
 
+test("block string value: |tag …| → labelBlock with tag/quote and trimmed value", () => {
+  const r = parseD2("x: |md\n# heading\nsome **text**\n|\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const n = r.graph.nodes[0];
+  assert.equal(n.id, "x");
+  assert.equal(n.label, "# heading\nsome **text**");
+  assert.deepEqual(n.labelBlock, { tag: "md", quote: "", value: "# heading\nsome **text**" });
+});
+
+test("block string: empty lines preserved, indentation stripped via common indent", () => {
+  const r = parseD2("x: |md\n  line1\n\n  line3\n|\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].label, "line1\n\nline3");
+});
+
+test("block string: same-line content after the tag (x: | foo)", () => {
+  const r = parseD2("x: | foo\nbar\n|\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const n = r.graph.nodes[0];
+  assert.equal(n.labelBlock.tag, "md", "space stops the tag, default md");
+  assert.equal(n.labelBlock.quote, "");
+  assert.equal(n.label, "foo\nbar");
+});
+
+test("block string: quote symbols widen and move the closer (d2 parser rules)", () => {
+  const r = parseD2("x: |++\nline with | pipe\nmore\n++|\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const n = r.graph.nodes[0];
+  assert.equal(n.labelBlock.tag, "md");
+  assert.equal(n.labelBlock.quote, "++");
+  assert.equal(n.label, "line with | pipe\nmore");
+});
+
+test("block string: quote chars include trailing | (|--| closes with |-||)", () => {
+  const r = parseD2("x: |--|\ncontent\n|-||\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].labelBlock.quote, "--|");
+  assert.equal(r.graph.nodes[0].label, "content");
+});
+
+test("unterminated block string is an error naming the expected closer", () => {
+  const r1 = parseD2("x: |md\ncontent\n");
+  assert.equal(r1.ok, false);
+  assert.match(r1.error.message, /незакрытая блочная строка \(ожидается \|\)/);
+  const r2 = parseD2("x: |++\ncontent\n");
+  assert.equal(r2.ok, false);
+  assert.match(r2.error.message, /ожидается \+\+\|/);
+  const r3 = parseD2("x: |\n");
+  assert.equal(r3.ok, false);
+  assert.match(r3.error.message, /незакрытая блочная строка/);
+});
+
+test("block string label inside a container and on an edge", () => {
+  const rc = parseD2("a: {\n  label: |md\n  **bold**\n  |\n  y\n}\n");
+  assert.ok(rc.ok, JSON.stringify(rc.error));
+  const a = rc.graph.nodes[0];
+  assert.equal(a.labelBlock.tag, "md");
+  assert.equal(a.label, "**bold**");
+  const re = parseD2("a -> b: |md\nedge label\n|\n");
+  assert.ok(re.ok, JSON.stringify(re.error));
+  const e = re.graph.edges[0];
+  assert.equal(e.labelBlock.tag, "md");
+  assert.equal(e.label, "edge label");
+});
+
+test("non-label attribute with block string value is stored as rawAttrs block form", () => {
+  const r = parseD2("a: {\n  tooltip: |md\n  tip text\n  |\n}\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.nodes[0].rawAttrs, ["tooltip: |md\n  tip text\n|"]);
+});
+
+test("position marker after the closer line is applied as the node position", () => {
+  const r = parseD2("x: |md\ncontent\n| # @d2pos 30,40\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const n = r.graph.nodes[0];
+  assert.equal(n.x, 30);
+  assert.equal(n.y, 40);
+  assert.equal(n.hasPos, true);
+});
+
+test("block string round-trips: parse -> clean -> parse is stable", () => {
+  const src = "x: |md\nfirst\nsecond\n|\ny\n";
+  const r1 = parseD2(src);
+  assert.ok(r1.ok, JSON.stringify(r1.error));
+  const clean = serializeClean(r1.graph);
+  const r2 = parseD2(clean);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.equal(serializeClean(r2.graph), clean);
+  assert.equal(r2.graph.nodes[0].label, r1.graph.nodes[0].label);
+});
+
+test("text after the closing line of a block string is an error (matches d2)", () => {
+  const r = parseD2("x: |md\nc\n|y\n");
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /неожиданный текст после оператора/);
+  assert.equal(r.error.line, 3);
+  const ok = parseD2("x: |md\nc\n|\ny\n");
+  assert.ok(ok.ok, JSON.stringify(ok.error));
+  assert.deepEqual(ok.graph.nodes.map((n) => n.id), ["x", "y"]);
+});
+
+test('""" after a | block string stays plain text inside the block (lexer order)', () => {
+  const r = parseD2("x: |md\n\"\"\" not a comment here\n|\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.nodes[0].label, '""" not a comment here');
+});
+
 test('""" block comments: multi-line, single-line, indent-stripped', () => {
   const multi = parseD2('"""\nblock\ncomment\n"""\nx\n');
   assert.ok(multi.ok, JSON.stringify(multi.error));
@@ -598,7 +705,10 @@ test("d2 CLI: parsed round-trips (clean and annotated) compile to identical stru
     "# Схема продакшена\nClient # front-end сервис # @d2pos 60,300\nsrv: {\n  label: \"Backend API\"\n  shape: cylinder\n  db # @d2pos 40,60\n}\nClient -> srv # по HTTPS\n",
     "n: {\n  style: {\n    fill: red\n  }\n}\n",
     "a, b -> c, d\n",
-    '"b.c" -> x\n'
+    '"b.c" -> x\n',
+    "intro: |md\n# heading\nsome **text**\n|\n",
+    "notes: {\n  label: |md\n  **bold**\n  |\n  tooltip: |md\n  custom tip\n  |\n}\n",
+    "a -> b: |md\nedge block\n|\n"
   ];
   const dir = await mkdtemp(join(tmpdir(), "d2parse-"));
   try {

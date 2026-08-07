@@ -68,6 +68,25 @@
     for (var i = 0; i < parts.length; i++) lines.push(ind + "# " + parts[i]);
   }
 
+  // Closing sequence of a block string: last quote char + quote[1:] + "|";
+  // with no quote chars it is a single `|`.
+  function blockStringCloser(quote) {
+    if (!quote) return "|";
+    return quote.charAt(quote.length - 1) + quote.slice(1) + "|";
+  }
+
+  // Emit a block string: opener line (`|quote tag`), content lines indented
+  // two spaces, closing line. Content keeps its value (already trimmed), so a
+  // re-parse strips the uniform indent and reproduces the same value.
+  function emitBlockString(lines, openerLine, block) {
+    lines.push(openerLine + "|" + block.quote + block.tag);
+    var ws = /^[ \t]*/.exec(openerLine)[0];
+    var parts = String(block.value || "").split("\n");
+    for (var i = 0; i < parts.length; i++) lines.push(ws + "  " + parts[i]);
+    lines.push(ws + blockStringCloser(block.quote));
+    return lines.length - 1;
+  }
+
   function serialize(graph, options) {
     options = options || {};
     var annotated = !!options.annotated;
@@ -150,19 +169,32 @@
       var kid = byId.get(n.children[k]);
       if (kid) kids.push(kid);
     }
-    var props = [];
-    if (n.label != null && n.label !== n.id) props.push("label: " + d2Key(n.label));
     var raw = n.rawAttrs || [];
-    if (kids.length || props.length || raw.length) {
+    var blockLabel = !!n.labelBlock;
+    var plainLabel = !blockLabel && n.label != null && n.label !== n.id;
+    if (kids.length || raw.length) {
       var open = ind + key + ": {" + lineSuffix(n, annotated);
       lines.push(open);
-      for (var p = 0; p < props.length; p++) lines.push(ind + "  " + props[p]);
+      if (blockLabel) emitBlockString(lines, ind + "  label: ", n.labelBlock);
+      else if (plainLabel) lines.push(ind + "  label: " + d2Key(n.label));
       for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
       for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
       lines.push(ind + "}");
-    } else {
-      lines.push(ind + key + lineSuffix(n, annotated));
+      return;
     }
+    if (blockLabel) {
+      // Node's own value is a block string: emit `key: |quote tag … |`.
+      var bi = emitBlockString(lines, ind + key + ": ", n.labelBlock);
+      lines[bi] += lineSuffix(n, annotated);
+      return;
+    }
+    if (plainLabel) {
+      lines.push(ind + key + ": {" + lineSuffix(n, annotated));
+      lines.push(ind + "  label: " + d2Key(n.label));
+      lines.push(ind + "}");
+      return;
+    }
+    lines.push(ind + key + lineSuffix(n, annotated));
   }
 
   function appendRaw(lines, ind, raw) {
@@ -180,6 +212,11 @@
     var src = nodePath(byId, ed.source).map(d2Key).join(".");
     var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
     var line = src + " -> " + tgt;
+    if (ed.labelBlock) {
+      var bi = emitBlockString(lines, line + ": ", ed.labelBlock);
+      if (ed.trailingComment) lines[bi] += " # " + ed.trailingComment;
+      return;
+    }
     var attrs = [];
     if (ed.label) attrs.push("label: " + d2Key(ed.label));
     for (var r = 0; r < (ed.rawAttrs || []).length; r++) attrs.push(ed.rawAttrs[r]);

@@ -268,3 +268,65 @@ test("d2 CLI: rich graph with labels/rawAttrs compiles", async (t) => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("block string node: emits key: |tag … | with the marker on the closer line", () => {
+  const g = {
+    v: 2,
+    nodes: [{ id: "x", label: "line one\nline two", labelBlock: { tag: "md", quote: "", value: "line one\nline two" }, x: 12, y: 340, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true }],
+    edges: [],
+    order: ["x"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "x: |md\n  line one\n  line two\n|");
+  assert.equal(serializeAnnotated(g), "x: |md\n  line one\n  line two\n| # @d2pos 12,340");
+  assert.equal(stripMarkers(serializeAnnotated(g)), serializeClean(g), "parity: annotated = clean + markers");
+});
+
+test("block string with quote keeps opener and closer form", () => {
+  const g = {
+    v: 2,
+    nodes: [{ id: "x", label: "a | b\nc", labelBlock: { tag: "md", quote: "++", value: "a | b\nc" }, x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [] }],
+    edges: [],
+    order: ["x"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "x: |++md\n  a | b\n  c\n++|");
+});
+
+test("block string inside a container: label prop form", () => {
+  const g = {
+    v: 2,
+    nodes: [{
+      id: "a", label: "**bold**", labelBlock: { tag: "md", quote: "", value: "**bold**" },
+      x: 0, y: 0, w: 150, h: 70, parentId: null, children: ["y"],
+      comments: [], trailingComment: null, rawAttrs: []
+    }, {
+      id: "y", label: "y", x: 0, y: 0, w: 150, h: 70, parentId: "a", children: [], comments: [], trailingComment: null, rawAttrs: []
+    }],
+    edges: [],
+    order: ["a", "y"],
+    headerComments: [], trailingComments: [],
+    idCounter: 2, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "a: {\n  label: |md\n    **bold**\n  |\n  y\n}");
+});
+
+test("block string edge label with trailing comment on the closer", () => {
+  const g = {
+    v: 2,
+    nodes: [
+      { id: "a", label: "a", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [] },
+      { id: "b", label: "b", x: 0, y: 0, w: 150, h: 70, parentId: null, children: [], comments: [], trailingComment: null, rawAttrs: [] }
+    ],
+    edges: [{
+      id: "e1", source: "a", target: "b", label: "x", labelBlock: { tag: "md", quote: "", value: "x" },
+      comments: [], trailingComment: "note", rawAttrs: []
+    }],
+    order: ["a", "b", "e1"],
+    headerComments: [], trailingComments: [],
+    idCounter: 2, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  };
+  assert.equal(serializeClean(g), "a\nb\n\na -> b: |md\n  x\n| # note");
+});
