@@ -12,18 +12,53 @@
     "source-arrowhead": 1, "target-arrowhead": 1, "pad": 1, "pad-x": 1, "pad-y": 1
   };
 
-  // Spaces are NOT delimiters: unquoted D2 keys/labels may contain them
-  // (e.g. `a b c` is a single node whose key is "a b c").
-  function isDelim(ch) {
-    return ch === "\r" || ch === "\n" || ch === "#" || ch === '"' ||
-      ch === "{" || ch === "}" || ch === ":" || ch === "," || ch === "." || ch === "[" || ch === "]" ||
-      ch === "(" || ch === ")" || ch === ";";
+  // D2 unquoted strings (d2parser parseUnquotedString): spaces are NOT
+  // delimiters and every token is a whole word run. Terminators depend on
+  // context: `a: a.b` is the label "a.b", but in a key `.` splits a path.
+  // Everywhere: \r \n ; # { } [ ]  — plus in keys: : . < > & and edge
+  // markers -- -> -* *- (a single `-` is literal: `a-b` is one key).
+  function isValueTerm(ch) {
+    return ch === "\r" || ch === "\n" || ch === ";" || ch === "#" ||
+      ch === "{" || ch === "}" || ch === "[" || ch === "]";
   }
 
+  function isKeyTerm(ch) {
+    return isValueTerm(ch) || ch === ":" || ch === "." || ch === "<" || ch === ">" || ch === "&";
+  }
+
+  // Matches d2parser decodeEscape: known escapes decode, unknown escapes
+  // drop the backslash (`"\q"` -> "q"), `\`+newline is a line continuation
+  // handled by the scanner itself.
+  function decodeEscape(c) {
+    switch (c) {
+      case "a": return "\x07";
+      case "b": return "\b";
+      case "f": return "\f";
+      case "n": return "\n";
+      case "r": return "\r";
+      case "t": return "\t";
+      case "v": return "\x0B";
+      case "\\": return "\\";
+      case '"': return '"';
+      default: return c;
+    }
+  }
+
+  function arrowLen(k, src) {
+    var c = src[k];
+    if (c === "-" && (src[k + 1] === "-" || src[k + 1] === ">" || src[k + 1] === "*")) return 2;
+    if (c === "<" && src[k + 1] === "-") return src[k + 2] === ">" ? 3 : 2;
+    if (c === "*" && src[k + 1] === "-") return 2;
+    return 0;
+  }
+
+  // Context-aware string lexer. `inValue` is true while scanning a value
+  // (after `:`), which widens the word terminator set to D2 value rules.
   function tokenize(src) {
     var tokens = [];
     var i = 0, n = src.length;
     var line = 1, col = 1;
+    var inValue = false;
     function advance(ch) {
       if (ch === "\n") { line++; col = 1; } else { col++; }
       i++;
@@ -31,67 +66,139 @@
     while (i < n) {
       var ch = src[i];
       var startLine = line, startCol = col;
-      if (ch === "\n") { tokens.push({ type: "nl", line: startLine, col: startCol }); advance(ch); continue; }
-      if (ch === " " || ch === "\t" || ch === "\r") { advance(ch); continue; }
+
+      if (ch === "\r") { advance(ch); continue; }
+      if (ch === "\n") {
+        tokens.push({ type: "nl", line: startLine, col: startCol });
+        advance(ch);
+        inValue = false;
+        continue;
+      }
+      if (ch === " " || ch === "\t") { advance(ch); continue; }
+
       if (ch === "#") {
         var cs = i;
         while (i < n && src[i] !== "\n") advance(src[i]);
         tokens.push({ type: "comment", text: src.slice(cs + 1, i).trim(), line: startLine, col: startCol });
+        inValue = false;
         continue;
       }
       if (ch === "/" && src[i + 1] === "/") {
         var cs2 = i;
         while (i < n && src[i] !== "\n") advance(src[i]);
         tokens.push({ type: "comment", text: src.slice(cs2 + 2, i).trim(), line: startLine, col: startCol });
+        inValue = false;
         continue;
       }
-      if (ch === '"') {
-        var s = i;
+
+      if (ch === '"' || ch === "'") {
+        var q = ch;
+        var qs = i;
+        var qLine = startLine, qCol = startCol;
         var val = "";
         var closed = false;
-        i++; col++;
+        advance(ch);
         while (i < n) {
           var c = src[i];
-          if (c === '"') { i++; col++; closed = true; break; }
+          if (c === "\n") break;
+          if (c === q) {
+            // single-quoted: '' is an escaped apostrophe
+            if (q === "'" && src[i + 1] === "'") {
+              val += "'";
+              advance(c); advance(src[i]);
+              continue;
+            }
+            advance(c);
+            closed = true;
+            break;
+          }
           if (c === "\\") {
-            var e = src[i + 1];
-            if (e === '"') val += '"';
-            else if (e === "\\") val += "\\";
-            else if (e === "n") val += "\n";
-            else val += "\\" + (e || "");
-            i += 2; col += 2;
+            var nx = src[i + 1];
+            if (nx === undefined) { advance(c); break; }
+            if (nx === "\n" || nx === "\r") { advance(c); advance(src[i]); continue; }
+            if (q === '"') {
+              val += decodeEscape(nx);
+              advance(c); advance(src[i]);
+            } else {
+              // single-quoted: backslash is literal (only \ + newline continues)
+              val += c;
+              advance(c);
+            }
             continue;
           }
-          if (c === "\n") break;
-          val += c; i++; col++;
+          val += c;
+          advance(c);
         }
-        if (!closed) return { error: { line: startLine, col: startCol, message: "незакрытая строка (ожидается \")" } };
-        tokens.push({ type: "str", value: val, line: startLine, col: startCol, off: s, end: i });
+        if (!closed) {
+          return { error: { line: qLine, col: qCol, message: q === '"' ? 'незакрытая строка (ожидается ")' : "незакрытая строка (ожидается ')" } };
+        }
+        tokens.push({ type: "str", value: val, line: qLine, col: qCol, off: qs, end: i });
         continue;
       }
-      if (ch === "-" && src[i + 1] === ">") {
-        tokens.push({ type: "arrow", line: startLine, col: startCol, off: i, end: i + 2 });
-        advance(ch);
-        advance(src[i]);
-        continue;
-      }
-      if (ch === "{" || ch === "}" || ch === ":" || ch === "," || ch === "." || ch === "[" || ch === "]" || ch === "(" || ch === ")") {
+
+      if (ch === "{" || ch === "}" || ch === "[" || ch === "]") {
         tokens.push({ type: "punct", value: ch, line: startLine, col: startCol, off: i, end: i + 1 });
         advance(ch);
+        if (ch === "{" || ch === "}" || ch === "]") inValue = false;
         continue;
       }
       if (ch === ";") {
         tokens.push({ type: "nl", line: startLine, col: startCol });
         advance(ch);
+        inValue = false;
         continue;
       }
-      var is = i;
-      while (i < n && !isDelim(src[i])) {
-        var cc = src[i];
-        if (cc === "-" && src[i + 1] === ">") break;
-        advance(cc);
+
+      if (!inValue) {
+        var al = arrowLen(i, src);
+        if (al) {
+          tokens.push({ type: "arrow", value: src.substr(i, al), line: startLine, col: startCol, off: i, end: i + al });
+          for (var ai = 0; ai < al; ai++) advance(src[i]);
+          continue;
+        }
+        if (ch === ":") {
+          tokens.push({ type: "punct", value: ":", line: startLine, col: startCol, off: i, end: i + 1 });
+          advance(ch);
+          inValue = true;
+          continue;
+        }
+        if (ch === "." || ch === "<" || ch === ">" || ch === "&") {
+          tokens.push({ type: "punct", value: ch, line: startLine, col: startCol, off: i, end: i + 1 });
+          advance(ch);
+          continue;
+        }
       }
-      tokens.push({ type: "ident", value: src.slice(is, i).trim(), line: startLine, col: startCol, off: is, end: i });
+
+      // unquoted word run (key or value, depending on inValue)
+      var is = i;
+      var buf = "";
+      var wordLine = line, wordCol = col;
+      while (i < n) {
+        var c2 = src[i];
+        if (isValueTerm(c2)) break;
+        if (!inValue && (c2 === ":" || c2 === "." || c2 === "<" || c2 === ">" || c2 === "&")) break;
+        if (!inValue && c2 === "-" && (src[i + 1] === "-" || src[i + 1] === ">" || src[i + 1] === "*")) break;
+        if (c2 === "\\") {
+          var nx = src[i + 1];
+          if (nx === undefined) { advance(c2); break; }
+          if (nx === "\n" || nx === "\r") { advance(c2); advance(src[i]); continue; }
+          buf += decodeEscape(nx);
+          advance(c2); advance(src[i]);
+          continue;
+        }
+        buf += c2;
+        advance(c2);
+      }
+      var lead = 0;
+      while (lead < buf.length && (buf[lead] === " " || buf[lead] === "\t")) lead++;
+      var tail = buf.length;
+      while (tail > lead && (buf[tail - 1] === " " || buf[tail - 1] === "\t")) tail--;
+      if (tail > lead) {
+        tokens.push({
+          type: "ident", value: buf.slice(lead, tail),
+          line: wordLine, col: wordCol + lead, off: is + lead, end: is + tail
+        });
+      }
     }
     return { tokens: tokens };
   }
@@ -130,12 +237,23 @@
     function peek() { return tokens[pos]; }
     function next() { var t = tokens[pos++]; if (t) { lastLine = t.line; lastCol = t.col; } return t; }
     function peekIs(v) { var t = peek(); return !!t && t.type === "punct" && t.value === v; }
-    function peekNext() { return tokens[pos + 1]; }
     function isArrow() { var t = peek(); return !!t && t.type === "arrow"; }
     function skipNl() { while (peek() && peek().type === "nl") next(); }
     function commentIsInline() {
       var t = peek();
       return !!t && t.type === "comment" && pos > 0 && tokens[pos - 1].type !== "nl";
+    }
+
+    // D2 requires every statement to end at a line boundary, `;`, `}` or a
+    // comment. Anything else on the same line is an error ("unexpected text
+    // after ..." in d2parser) — e.g. `x: "a" b` or `a { b } c`.
+    function checkStatementEnd() {
+      var t = peek();
+      if (!t) return;
+      if (t.type === "nl" || t.type === "comment") return;
+      if (t.type === "punct" && (t.value === "}" || t.value === "]")) return;
+      if (t.line > lastLine) return;
+      errorAt(t, "неожиданный текст после оператора");
     }
     function curScope() { return scopeStack[scopeStack.length - 1]; }
     function curDepth() { return scopeStack.length - 1; }
@@ -270,20 +388,6 @@
       if (t.type === "ident") {
         var v = t.value;
         next();
-        if (/^\d+$/.test(v) && peekIs(".")) {
-          var t2 = peekNext();
-          if (t2 && t2.type === "ident" && /^\d+$/.test(t2.value)) {
-            next(); v += "." + next().value;
-            return v;
-          }
-        }
-        while (peekIs(".")) {
-          var t3 = peekNext();
-          if (t3 && (t3.type === "ident" || t3.type === "str")) {
-            next();
-            v += "." + next().value;
-          } else break;
-        }
         return v;
       }
       return null;
@@ -377,7 +481,6 @@
           next();
           continue;
         }
-        if (t.type === "punct" && (t.value === "," || t.value === ";")) { next(); continue; }
         var p = parsePath();
         if (!p) { errorAt(t, "ожидается атрибут ребра"); }
         if (!peekIs(":")) { errorAt(peek(), "ожидается ':' в атрибутах ребра"); }
@@ -417,16 +520,9 @@
 
     function parseEdge(firstPath) {
       var sources = [firstPath];
-      while (peekIs(",")) {
-        next();
-        var sp = parsePath();
-        if (!sp) { errorAt(peek(), "ожидается путь после ','"); }
-        sources.push(sp);
-      }
-      if (!isArrow()) { errorAt(peek(), "ожидается '->'"); }
       var edges = [];
       while (isArrow()) {
-        next();
+        var a = next();
         var targets = [];
         while (true) {
           var p = parsePath();
@@ -435,9 +531,13 @@
           if (peekIs(",")) { next(); continue; }
           break;
         }
+        // D2 v0.7.1: `a <- b` means edge b -> a (source on the right).
+        // `<->` is bidirectional; we model it as one forward edge.
+        var rev = a.value === "<-";
         for (var si = 0; si < sources.length; si++) {
           for (var ti = 0; ti < targets.length; ti++) {
-            edges.push(createEdge(sources[si], targets[ti]));
+            if (rev) edges.push(createEdge(targets[ti], sources[si]));
+            else edges.push(createEdge(sources[si], targets[ti]));
           }
         }
         sources = targets;
@@ -478,8 +578,17 @@
           return;
         }
         var v = parseValue();
+        if (v == null) { errorAt(peek(), "ожидается значение после ':'"); }
         var cn = declareNode(pathTokens);
-        if (v != null) cn.label = v;
+        cn.label = v;
+        // `x: a { b }` — value becomes the label, `{ b }` the container
+        // (valid in D2 only when `{` is on the same line).
+        if (peekIs("{") && peek().line === lastLine) {
+          next();
+          parseBlock(cn);
+          attachInlineNode(cn);
+          return;
+        }
         attachInlineNode(cn);
         return;
       }
@@ -490,13 +599,8 @@
         attachInlineNode(bnode);
         return;
       }
-      if (t && (t.type === "ident" || t.type === "str")) {
-        var lv = next().value;
-        var cn2 = declareNode(pathTokens);
-        cn2.label = lv;
-        attachInlineNode(cn2);
-        return;
-      }
+      // D2 has no label shortcut (`key label` without a colon): an unquoted
+      // `a b` is a single key, and a quoted `"a" b` is invalid text.
       var cn3 = declareNode(pathTokens);
       attachInlineNode(cn3);
     }
@@ -528,7 +632,6 @@
       if (t.type === "punct") {
         if (t.value === "}") { errorAt(t, "лишняя закрывающая скобка '}'"); }
         if (t.value === "]") { errorAt(t, "лишняя закрывающая скобка ']'"); }
-        if (t.value === "," || t.value === ";") { next(); return true; }
         errorAt(t, "неожиданный символ '" + t.value + "'");
       }
       if (t.type === "arrow") { errorAt(t, "стрелка без исходника"); }
@@ -537,11 +640,12 @@
       }
       var path = parsePath();
       if (!path) { errorAt(t, "неожиданный токен"); }
-      if (isArrow() || peekIs(",")) {
+      if (isArrow()) {
         parseEdge(path);
-        return true;
+      } else {
+        parseNodeOrAttr(path);
       }
-      parseNodeOrAttr(path);
+      checkStatementEnd();
       return true;
     }
 

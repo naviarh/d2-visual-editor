@@ -203,11 +203,14 @@ test("chain a -> b -> c produces two edges", () => {
   assert.deepEqual(r.graph.edges.map((e) => [e.source, e.target]), [["a", "b"], ["b", "c"]]);
 });
 
-test("source/target lists produce cartesian product", () => {
+test("comma is literal in D2 keys: a, b -> c, d is one edge between two nodes", () => {
   const r = parseD2("a, b -> c, d\n");
   assert.ok(r.ok, JSON.stringify(r.error));
-  const pairs = r.graph.edges.map((e) => [e.source, e.target]).sort();
-  assert.deepEqual(pairs, [["a", "c"], ["a", "d"], ["b", "c"], ["b", "d"]].sort());
+  const ids = r.graph.nodes.map((n) => n.id);
+  assert.deepEqual(ids, ["a, b", "c, d"]);
+  assert.deepEqual(r.graph.edges.map((e) => [e.source, e.target]), [["a, b", "c, d"]]);
+  const out = serializeClean(r.graph);
+  assert.ok(out.includes('"a, b" -> "c, d"'), out);
 });
 
 test("deep path p.q.r -> s creates nested nodes", () => {
@@ -277,12 +280,12 @@ test("edge label forms: {label: x} block and : 'l' string", () => {
   }
 });
 
-test("container syntax without colon: a { label: x }", () => {
+test("container syntax without colon: a { label: x } — comma is literal in values", () => {
   const r = parseD2("a {label: x, shape: cylinder}\n");
   assert.ok(r.ok, JSON.stringify(r.error));
   const a = r.graph.nodes.find((n) => n.id === "a");
-  assert.equal(a.label, "x");
-  assert.deepEqual(a.rawAttrs, ["shape: cylinder"]);
+  assert.equal(a.label, "x, shape: cylinder");
+  assert.deepEqual(a.rawAttrs, []);
 });
 
 test("unquoted key keeps inner spaces: a b c is one node", () => {
@@ -300,6 +303,148 @@ test("unquoted multi-word label after colon", () => {
   assert.equal(r.graph.nodes.length, 1);
   assert.equal(r.graph.nodes[0].id, "x");
   assert.equal(r.graph.nodes[0].label, "hello world");
+});
+
+test("D2 string parity: unquoted values absorb D2-valid characters (v0.7.1)", () => {
+  const cases = [
+    ["x: don't", "don't"],
+    ['x: a"b', 'a"b'],
+    ["x: (a)", "(a)"],
+    ["x: a.b", "a.b"],
+    ["x: a,b", "a,b"],
+    ["x: a:b", "a:b"],
+    ["x: a -> b", "a -> b"],
+    ["x: a->b", "a->b"],
+    ["x: a--b", "a--b"],
+    ["x: a*b", "a*b"],
+    ["x: a&b", "a&b"],
+    ["x: a<b>c", "a<b>c"],
+    ["x: 1.5", "1.5"],
+    ["x: a b c", "a b c"],
+    ['x: a"b"', 'a"b"'],
+    ["x: a\\", "a"],
+    ["x: a#b", "a"]
+  ];
+  for (const [src, label] of cases) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    assert.equal(r.graph.nodes[0].label, label, src);
+  }
+});
+
+test("D2 string parity: quoted strings (single/double) decode per v0.7.1", () => {
+  const cases = [
+    ["x: 'it''s'", "it's"],
+    ["x: 'a b'", "a b"],
+    ["x: 'a\\nb'", "a\\nb"],
+    ["x: 'a$b'", "a$b"],
+    ["x: 'a\\\\b'", "a\\\\b"],
+    ['x: "a b"', "a b"],
+    ['x: "a\\qb"', "aqb"],
+    ['x: "a\\tb"', "a\tb"],
+    ['x: "a\\"b"', 'a"b'],
+    ['x: "a\\\\b"', "a\\b"],
+    ['x: ""', ""],
+    ["x: ''", ""]
+  ];
+  for (const [src, label] of cases) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    assert.equal(r.graph.nodes[0].label, label, src);
+  }
+});
+
+test("D2 string parity: \\ + newline continues the line in every string kind", () => {
+  const cases = [
+    "x: a\\\nb",
+    'x: "a\\\nb"',
+    "x: 'a\\\nb'"
+  ];
+  for (const src of cases) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    assert.equal(r.graph.nodes[0].label, "ab", JSON.stringify(src));
+  }
+});
+
+test("D2 string parity: keys, paths and arrows per v0.7.1", () => {
+  const single = parseD2("a-b\n");
+  assert.ok(single.ok);
+  assert.deepEqual(single.graph.nodes.map((n) => n.id), ["a-b"], "single dash is literal");
+  const pairs = [
+    ["a--b\n", ["a", "b"], "-- is an edge"],
+    ["a -- b\n", ["a", "b"], "-- with spaces"],
+    ["a -* b\n", ["a", "b"], "-*"],
+    ["a <- b\n", ["b", "a"], "<- reverses"],
+    ["a <-> b\n", ["a", "b"], "<-> forward"]
+  ];
+  for (const [src, pair, why] of pairs) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    assert.deepEqual(r.graph.edges.map((e) => [e.source, e.target]), [pair], why);
+  }
+  const group = parseD2("(a, b) -> c\n");
+  assert.ok(group.ok);
+  assert.deepEqual(group.graph.nodes.map((n) => n.id), ["(a, b)", "c"], "edge groups are not D2 v0.7.1");
+  const path = parseD2("a.b -> c\n");
+  assert.ok(path.ok);
+  assert.deepEqual(path.graph.edges.map((e) => [e.source, e.target]), [["b", "c"]]);
+  assert.deepEqual(path.graph.nodes.map((n) => n.id), ["a", "b", "c"]);
+  const q = parseD2('"a b": x\n');
+  assert.ok(q.ok);
+  const n = q.graph.nodes[0];
+  assert.equal(n.id, "a b");
+  assert.equal(n.label, "x");
+});
+
+test("D2 string parity: value then container on the same line sets the label", () => {
+  for (const src of ["x: a { b }\n", 'x: "a" { b }\n']) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    const x = r.graph.nodes.find((n) => n.id === "x");
+    assert.equal(x.label, "a", src);
+    assert.deepEqual(x.children, ["b"], src);
+  }
+});
+
+test("D2 string parity: syntax errors match v0.7.1 line/col behavior", () => {
+  const cases = [
+    ["x: \n", "ожидается значение после ':'"],
+    ["x: 'a\\'b'\n", "неожиданный текст"],
+    ['x: "unterminated\n', "незакрытая строка"],
+    ['x: "a" b\n', "неожиданный текст"],
+    ["a { b } c\n", "неожиданный текст"]
+  ];
+  for (const [src, msg] of cases) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, "should fail: " + src);
+    assert.ok(r.error.message.includes(msg), src + " -> " + r.error.message);
+    assert.equal(typeof r.error.line, "number", src);
+    assert.equal(typeof r.error.col, "number", src);
+  }
+});
+
+test("D2 string parity: parse -> serialize -> parse is stable for string forms", () => {
+  const sources = [
+    "x: don't\n",
+    "x: 'it''s'\n",
+    'x: "a\\qb"\n',
+    "x: 'a\\nb'\n",
+    "a <- b\n",
+    "a -- b\n",
+    "x: a { b }\n",
+    "x: a.b\n",
+    '"a b": x\n',
+    "a-b -> c\n"
+  ];
+  for (const src of sources) {
+    const g1 = parseD2(src);
+    assert.ok(g1.ok, JSON.stringify(g1.error) + " for " + src);
+    const text1 = serializeAnnotated(g1.graph);
+    const g2 = parseD2(text1);
+    assert.ok(g2.ok, JSON.stringify(g2.error) + " for serialized " + src);
+    assert.equal(serializeAnnotated(g2.graph), text1, "stable for: " + src);
+  }
 });
 
 test("// line comments (D2 supports both # and //)", () => {
@@ -347,9 +492,9 @@ test("syntax errors: return {ok:false, error:{line,col,message}} without touchin
     ["}\n", "лишняя закрывающая скобка"],
     ["-> a\n", "стрелка без исходника"],
     ["a ->\n", "ожидается цель ребра"],
-    ["a, b\n", "ожидается '->'"],
     ['"unclosed\n', "незакрытая строка"],
     ["@ x\n", "директивы"],
+    ['x: "a" b\n', "неожиданный текст"],
     ["a: { }\n", null]
   ];
   for (const [src, msgPart] of cases) {
