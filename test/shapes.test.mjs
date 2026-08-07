@@ -130,6 +130,23 @@ test("outlineIntersect returns null when the ray misses the polygon", () => {
   assert.equal(outlineIntersect(poly, 200, 200, 1, 0), null);
 });
 
+test("c4-person: head overlaps the body, outline is the clean union contour", () => {
+  const box = { x: 0, y: 0, w: 150, h: 70 };
+  const rec = SHAPES.c4person;
+  const r = rec.params.headR * Math.min(box.w, box.h);
+  const top = (2 - rec.params.headOverlap) * r;
+  assert.ok(2 * r > top + 1e-6, "head bottom dips below the body top (overlap)");
+  const poly = outlinePoints("c4-person", box);
+  assert.ok(poly.some((p) => Math.abs(p.y - box.y) < 0.5), "head apex reaches the box top");
+  const half = r * Math.sqrt(2 * rec.params.headOverlap - rec.params.headOverlap * rec.params.headOverlap);
+  const cx = box.w / 2;
+  const onTop = poly.filter((p) => Math.abs(p.y - top) < 0.5);
+  assert.ok(onTop.some((p) => Math.abs(p.x - (cx - half)) < 1), "left head crossing on the body top");
+  assert.ok(onTop.some((p) => Math.abs(p.x - (cx + half)) < 1), "right head crossing on the body top");
+  const inGap = onTop.filter((p) => p.x > cx - half + 0.5 && p.x < cx + half - 0.5);
+  assert.equal(inGap.length, 0, "covered top-center segment is removed from the outline");
+});
+
 test("normalizeRatio: 1:1 forms take the maximum of w/h", () => {
   assert.deepEqual(normalizeRatio("circle", 150, 70), { w: 150, h: 150 });
   assert.deepEqual(normalizeRatio("square", 60, 90), { w: 90, h: 90 });

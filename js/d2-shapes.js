@@ -403,32 +403,40 @@
 
   SHAPES.c4person = {
     name: 'c4-person', ratio: null,
-    params: { headR: 0.21, rx: 8 },
+    params: { headR: 0.21, rx: 8, headOverlap: 0.15 },
     render: function (b, p) {
       var r = p.headR * Math.min(b.w, b.h);
       var cx = b.x + b.w / 2, cy = b.y + r;
-      var bodyTop = b.y + 2 * r;
+      var top = b.y + (2 - p.headOverlap) * r;
+      var body = roundedRectD({ x: b.x, y: top, w: b.w, h: b.y + b.h - top }, p.rx);
       var head = ellipseD(cx, cy, r, r);
-      var body = roundedRectD({ x: b.x, y: bodyTop, w: b.w, h: b.h - 2 * r }, p.rx);
-      return [head, body];
+      return [body, head];
     },
     outline: function (b, p) {
       var r = p.headR * Math.min(b.w, b.h);
       var cx = b.x + b.w / 2, cy = b.y + r;
-      var bodyTop = b.y + 2 * r;
-      var body = { x: b.x, y: bodyTop, w: b.w, h: b.h - 2 * r };
-      var headTop = arcPoints(cx, cy, r, r, PI, PI * 2, 8);
-      var headRight = arcPoints(cx, cy, r, r, 0, PI / 2, 4);
-      var headLeft = arcPoints(cx, cy, r, r, PI / 2, PI, 4);
-      var bodyLoop = roundedRectOutline(body, p.rx);
-      var rrc = Math.min(p.rx, body.w / 2, body.h / 2);
-      var startIdx = 0, bestD = Infinity;
-      for (var i = 0; i < bodyLoop.length; i++) {
-        var d = Math.hypot(bodyLoop[i].x - (body.x + body.w - rrc), bodyLoop[i].y - bodyTop);
-        if (d < bestD) { bestD = d; startIdx = i; }
-      }
-      var bodyPart = bodyLoop.slice(startIdx).concat(bodyLoop.slice(0, startIdx));
-      return headTop.concat(headRight, bodyPart, headLeft);
+      var top = b.y + (2 - p.headOverlap) * r;
+      var bot = b.y + b.h;
+      var rrc = Math.min(p.rx, b.w / 2, (bot - top) / 2);
+      // The head dips into the body (drawn on top, like d2). The outer contour of
+      // the union: the head arc above the body top line (between the two crossing
+      // points) plus the body perimeter with the covered top-center segment
+      // removed. No redundant/interior segments, so edges anchor to the real
+      // silhouette.
+      var dy = top - cy;
+      var half = Math.sqrt(Math.max(0, r * r - dy * dy));
+      var aR = Math.atan2(dy, half);
+      var pts = arcPoints(cx, cy, r, r, PI - aR, PI * 2 + aR, 8);
+      pts.push(P(cx + half, top), P(b.x + b.w - rrc, top));
+      pts = pts.concat(arcPoints(b.x + b.w - rrc, top + rrc, rrc, rrc, -PI / 2, 0, 6));
+      pts.push(P(b.x + b.w, bot - rrc));
+      pts = pts.concat(arcPoints(b.x + b.w - rrc, bot - rrc, rrc, rrc, 0, PI / 2, 6));
+      pts.push(P(b.x + rrc, bot));
+      pts = pts.concat(arcPoints(b.x + rrc, bot - rrc, rrc, rrc, PI / 2, PI, 6));
+      pts.push(P(b.x, top + rrc));
+      pts = pts.concat(arcPoints(b.x + rrc, top + rrc, rrc, rrc, PI, PI * 3 / 2, 6));
+      pts.push(P(cx - half, top));
+      return pts;
     }
   };
 
