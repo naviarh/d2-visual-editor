@@ -662,6 +662,17 @@ test("UI E2E: shape selector applies a shape to the selected block", { timeout: 
     const shapePaths = await page.$$eval("#nodes .node.selected svg.nshape path", (els) => els.length);
     assert.ok(shapePaths >= 1, "selected node renders an inline shape SVG");
 
+    // the label must stay visible above the shape fill (z-order regression)
+    const labelOnTop = await page.evaluate(() => {
+      const el = document.querySelector("#nodes .node.selected");
+      const lab = el.querySelector(".nlabel");
+      const r = el.getBoundingClientRect();
+      const lb = lab.getBoundingClientRect();
+      const top = document.elementFromPoint(lb.x + lb.width / 2, lb.y + lb.height / 2);
+      return !!(top && (top === lab || top.closest(".nlabel")));
+    });
+    assert.equal(labelOnTop, true, "node label paints above the shape");
+
     // queueGen (1 s) regenerates the code with shape: diamond right after the label
     await new Promise((r) => setTimeout(r, 1400));
     const txt = await text(page);

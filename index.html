@@ -25,6 +25,12 @@
   button.active { background: #2f6fed; border-color: #2f6fed; color: #fff; }
   button.primary { background: #2f6fed; border-color: #2f6fed; color: #fff; font-weight: 600; }
   button.primary:hover { background: #2459c9; }
+  select {
+    padding: 6px 8px; border: 1px solid #c9cdd6; border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 13px; line-height: 1.2; color: #1f2430;
+  }
+  select:hover:not(:disabled) { background: #f0f2f5; }
+  select:disabled { color: #a0a6b0; background: #f7f8fa; cursor: default; }
   .sep { width: 1px; height: 20px; background: #dfe2e8; }
   #hint { margin-left: auto; color: #667085; font-size: 13px; }
   #flow { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: #fbfbfd; }
@@ -49,12 +55,12 @@
   .node.shaped { border: none; background: none; box-shadow: none; }
   .node.shaped.selected { box-shadow: 0 0 0 3px rgba(47,111,237,.25); }
   .node.shaped.src { box-shadow: 0 0 0 3px rgba(47,158,68,.25); }
-  .nshape { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .nshape { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; }
   .nshape-path { fill: #ffffff; stroke: #7a8699; stroke-width: 2; }
   .node.selected .nshape-path { stroke: #2f6fed; }
   .node.src .nshape-path { stroke: #2f9e44; }
-  .nlabel { font-size: 18px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; }
-  .nlabel.bottom { position: absolute; left: 0; right: 0; bottom: 4px; font-size: 13px; font-weight: 500; padding: 2px 6px; }
+  .nlabel { font-size: 18px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; z-index: 1; }
+  .nlabel.bottom { position: absolute; left: 0; right: 0; bottom: 4px; font-size: 14px; font-weight: 600; padding: 2px 6px; }
   #split { flex: 1; display: flex; min-height: 0; }
   #code-panel { width: 33.333%; min-width: 200px; display: flex; flex-direction: column; border-right: 1px solid #dfe2e8; }
   #divider { flex: 0 0 6px; cursor: col-resize; background: #e6e8ee; }
@@ -1213,7 +1219,7 @@ function buildSVG() {
     const x = a.x, y = a.y;
     const label = n.label != null ? String(n.label) : "";
     const bottom = !container && shapeLabelBottom(n);
-    const font = container ? "700 18px " + SVG_FONT : (bottom ? "500 13px " + SVG_FONT : "600 18px " + SVG_FONT);
+    const font = container ? "700 18px " + SVG_FONT : (bottom ? "600 14px " + SVG_FONT : "600 18px " + SVG_FONT);
     const wrapMax = container ? Math.max(20, s.w - 30) : Math.max(20, s.w - 16);
     const lines = wrapLabel(label, wrapMax, font);
     const m = svgFontMetrics(font);
@@ -1225,11 +1231,11 @@ function buildSVG() {
       }
     } else if (bottom) {
       const cx = x + s.w / 2;
-      const fontSize = 13;
+      const fontSize = 14;
       for (let i = 0; i < lines.length; i++) {
         const ly2 = y + s.h - 10 - (lines.length - 1 - i) * SVG_LINE_H + (m.ascent - m.descent) / 2;
         body += '<text x="' + cx + '" y="' + ly2 + '" text-anchor="middle" font-family="' + SVG_FONT
-          + '" font-size="' + fontSize + '" font-weight="500" fill="#1f2430">' + esc(lines[i]) + '</text>';
+          + '" font-size="' + fontSize + '" font-weight="600" fill="#1f2430">' + esc(lines[i]) + '</text>';
       }
     } else {
       const cx = x + s.w / 2, cy = y + s.h / 2;
