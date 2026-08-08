@@ -139,7 +139,7 @@
   <div id="flow">
     <div class="flowbar"><b>Схема</b>
       <button id="btnBlock">+ Блок</button>
-      <select id="shapeSel" title="Форма выбранного блока" disabled></select>
+      <select id="shapeSel" title="Форма блока (выбранного или по умолчанию для новых)"></select>
       <button id="btnGroup">Группировать блоки</button>
       <button id="btnEdge">+ Стрелка</button>
       <select id="dirSel" title="Направление стрелки"></select>
@@ -755,8 +755,9 @@ function renderHint() {
   document.getElementById("btnEdge").classList.toggle("active", mode === "edge");
   document.getElementById("btnGroup").classList.toggle("active", mode === "group");
   const sel = nodes.get(selectedId);
-  shapeSel.disabled = !(sel && !isContainer(sel));
-  shapeSel.value = (sel && !isContainer(sel) && sel.shape) ? sel.shape : "";
+  // Mirror of dirSel: only reflect the selection back into the control; when
+  // nothing shapeable is selected the control keeps the pending default shape.
+  if (sel && !isContainer(sel)) shapeSel.value = sel.shape || "";
   const ed = selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : null;
   if (ed) dirSel.value = ed.dir || "->";
   let txt = "Клик — выбрать. Drag — двигать. Двойной клик по блоку — переименовать, по стрелке — подпись. Delete — удалить.";
@@ -996,7 +997,12 @@ async function addBlock() {
   let id = label, i = 2;
   while (nodes.has(id)) id = label + "-" + (i++);
   const c = centerFlow();
-  nodes.set(id, { id, label, x: c.x - 75, y: c.y - 35, w: 150, h: 70, parentId: null, children: [] });
+  const n = { id, label, x: c.x - 75, y: c.y - 35, w: 150, h: 70, parentId: null, children: [] };
+  // The "Тип блока" selector serves as the default for new blocks (like the
+  // direction selector does for new edges); the empty option means no shape.
+  const shape = shapeSel.value;
+  if (shape) n.shape = shape;
+  nodes.set(id, n);
   order.push(id);
   selectedId = id;
   render();
@@ -1038,6 +1044,9 @@ function toggleMode(m) {
 document.getElementById("btnBlock").onclick = addBlock;
 document.getElementById("btnEdge").onclick = () => toggleMode("edge");
 document.getElementById("btnGroup").onclick = () => toggleMode("group");
+// With a block selected the choice sets its shape; otherwise it becomes the
+// default shape for new blocks (the selector stays enabled either way), the
+// same split of roles as dirSel for edge direction.
 shapeSel.onchange = () => {
   const n = nodes.get(selectedId);
   if (!n || isContainer(n)) return;

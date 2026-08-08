@@ -696,6 +696,39 @@ test("UI E2E: shape selector applies a shape to the selected block", { timeout: 
   }
 });
 
+test("UI E2E: shape selector is always enabled and sets the default shape for new blocks", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    // enabled without any selection, exactly like the direction selector
+    assert.equal(await page.$eval("#shapeSel", (el) => el.disabled), false, "selector stays enabled with no selection");
+    assert.equal(await page.$eval("#shapeSel", (el) => el.value), "", "default value is the empty (rectangle) option");
+
+    // pick a default shape, then create a block: the new node must carry it
+    await page.select("#shapeSel", "cylinder");
+    await new Promise((r) => setTimeout(r, 150));
+    await page.click("#btnBlock");
+    await page.waitForSelector("#modal-overlay", { visible: true });
+    await page.type("#modal-input", "Tank");
+    await page.click("#modal-ok");
+    await new Promise((r) => setTimeout(r, 300));
+
+    const tankShaped = await page.evaluate(() => {
+      const n = [...document.querySelectorAll("#nodes .node")].find((el) => el.querySelector(".nlabel") && el.querySelector(".nlabel").textContent === "Tank");
+      return n ? !!n.querySelector("svg.nshape") : false;
+    });
+    assert.equal(tankShaped, true, "new block renders with the chosen default shape");
+
+    // queueGen (1 s) regenerates the code with the shape right after the label
+    await new Promise((r) => setTimeout(r, 1400));
+    const txt = await text(page);
+    assert.ok(txt.includes("shape: cylinder"), "default shape emitted into the code");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("UI E2E: direction selector changes the selected edge and sets the default for new edges", { timeout: 90000 }, async (t) => {
   const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
   try {
