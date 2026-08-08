@@ -1,7 +1,7 @@
 (function (global) {
   "use strict";
 
-  var POS_RE = /#\s*@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
+  var POS_RE = /#\s*(?:---\s*)?@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
 
   // D2 escapes for double-quoted emission: backslash, quote, `$` (a
   // substitution start in values) and the control chars of the D2 escape set.
@@ -105,10 +105,26 @@
     return Number.isFinite(v) ? Math.round(v) : 0;
   }
 
-  // A comment entry may span several lines (merged `#` lines, `"""` blocks);
-  // D2 emits each line as its own `#`-comment, so split on newlines.
-  function pushComment(lines, ind, text) {
-    var parts = String(text).split("\n");
+  // A comment entry is either a plain string (`#` comment; may span several
+  // lines when adjacent `#` lines are merged) or `{ text, block:true }` for a
+  // `"""` block comment. Each is re-emitted in its own original form. d2
+  // formats a block comment whose content fits on one line as `""" text """`
+  // (empty content becomes `"""  """`); multi-line content is emitted with
+  // each line indented to the element's level, like `d2 fmt`.
+  function pushComment(lines, ind, entry) {
+    if (entry && typeof entry === "object" && entry.block) {
+      var btext = String(entry.text == null ? "" : entry.text);
+      if (btext.indexOf("\n") === -1) {
+        lines.push(ind + '""" ' + btext + ' """');
+      } else {
+        lines.push(ind + '"""');
+        var bparts = btext.split("\n");
+        for (var bi = 0; bi < bparts.length; bi++) lines.push(ind + bparts[bi]);
+        lines.push(ind + '"""');
+      }
+      return;
+    }
+    var parts = String(entry).split("\n");
     for (var i = 0; i < parts.length; i++) lines.push(ind + "# " + parts[i]);
   }
 
@@ -198,7 +214,7 @@
   function lineSuffix(n, annotated) {
     var parts = [];
     if (n.trailingComment) parts.push("# " + n.trailingComment);
-    if (annotated) parts.push("# @d2pos " + intCoord(n.x) + "," + intCoord(n.y));
+    if (annotated) parts.push("# --- @d2pos " + intCoord(n.x) + "," + intCoord(n.y));
     return parts.length ? " " + parts.join(" ") : "";
   }
 

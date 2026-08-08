@@ -65,8 +65,8 @@ test("v1 -> v2 migration: legacy localStorage opens with built order", { timeout
     // positions are hidden by default; toggle to annotated to verify markers
     await toggle(page);
     const txt = await text(page);
-    for (const s of ['Client # @d2pos 60,300', '"API Server": { # @d2pos 340,230', 'Database # @d2pos 40,60',
-      'Cache # @d2pos 40,170', 'Worker # @d2pos 340,520', 'HTTPS']) {
+    for (const s of ['Client # --- @d2pos 60,300', '"API Server": { # --- @d2pos 340,230', 'Database # --- @d2pos 40,60',
+      'Cache # --- @d2pos 40,170', 'Worker # --- @d2pos 340,520', 'HTTPS']) {
       assert.ok(txt.includes(s), "serialized: " + s);
     }
     const nodeCount = await page.$$eval("#nodes .node", (els) => els.length);
@@ -108,20 +108,20 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
 
     // rename on an annotated line -> merge keeps position, text not clobbered
     const renamed = (await text(page))
-      .replace('789 # @d2pos 438,173', '789x # @d2pos 438,173')
+      .replace('789 # --- @d2pos 438,173', '789x # --- @d2pos 438,173')
       .replace('"Группа 1"."подгруппа 1".456 -> "Группа 1"."подгруппа 1".789',
                '"Группа 1"."подгруппа 1".456 -> "Группа 1"."подгруппа 1".789x');
     await setText(page, renamed);
     await waitEdit();
     const afterRename = await text(page);
-    assert.ok(afterRename.includes("789x # @d2pos 438,173"), "rename kept marker");
+    assert.ok(afterRename.includes("789x # --- @d2pos 438,173"), "rename kept marker");
     assert.ok(afterRename.includes('"подгруппа 1".456 -> "Группа 1"."подгруппа 1".789x'), "edge reference renamed");
     assert.ok(afterRename.includes("@d2pos 438,173"), "position preserved");
     assert.equal(await page.$eval("#outStatus", (el) => el.textContent), "Синхронизировано");
 
     // insert a new block -> auto-position, order at end, status message
     const inserted = afterRename.replace('5 -> "Группа 1"."123-2"',
-      '5 -> "Группа 1"."123-2"\nNewBlock # @d2pos 5,5');
+      '5 -> "Группа 1"."123-2"\nNewBlock # --- @d2pos 5,5');
     await setText(page, inserted);
     await waitEdit();
     const afterInsert = await text(page);

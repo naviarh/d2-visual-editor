@@ -246,9 +246,9 @@ test("end-to-end pipeline: rename+insert+delete in annotated text keeps position
   assert.ok(text.includes("@d2pos"), "annotated text carries markers");
 
   const edited = text
-    .replace("Client # @d2pos 60,300", 'WebClient # @d2pos 60,300')
+    .replace("Client # --- @d2pos 60,300", 'WebClient # --- @d2pos 60,300')
     .replace("Client -> \"API Server\"", 'WebClient -> "API Server"')
-    .replace("Database # @d2pos 40,60", "Database # @d2pos 40,60\nNewBlock # @d2pos 5,5");
+    .replace("Database # --- @d2pos 40,60", "Database # --- @d2pos 40,60\nNewBlock # --- @d2pos 5,5");
 
   const parsed = parse(edited);
   const out = mergeGraph(parsed, current, { selectedId: "Client" });

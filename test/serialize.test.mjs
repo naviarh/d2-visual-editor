@@ -104,9 +104,9 @@ test("serializeClean: rich graph (comments, label, rawAttrs, header/trailing)", 
 
 test("serializeAnnotated: markers appended after trailingComment, local coords", () => {
   const out = serializeAnnotated(richGraph);
-  assert.ok(out.includes("Client # front-end сервис # @d2pos 60,300"));
-  assert.ok(out.includes("srv: { # @d2pos 340,230"));
-  assert.ok(out.includes("  db # @d2pos 40,60"));
+  assert.ok(out.includes("Client # front-end сервис # --- @d2pos 60,300"));
+  assert.ok(out.includes("srv: { # --- @d2pos 340,230"));
+  assert.ok(out.includes("  db # --- @d2pos 40,60"));
   const edgeLine = out.split("\n").find((l) => l.startsWith("Client -> srv"));
   assert.ok(edgeLine, "edge present");
   assert.ok(!edgeLine.includes("@d2pos"), "edges must not get markers");
@@ -134,9 +134,10 @@ test("POS_RE extracts local coords from every annotated node line", () => {
   assert.equal(marked, demoGraph.nodes.length, "every node line carries a marker");
 });
 
-test("POS_RE anchored: matches at end of line only", () => {
-  assert.equal("a # @d2pos 1,2".match(POS_RE)[1], "1");
-  assert.equal("a # @d2pos -12,300".match(POS_RE)[2], "300");
+test("POS_RE anchored: matches at end of line only, both marker forms", () => {
+  assert.equal("a # @d2pos 1,2".match(POS_RE)[1], "1", "legacy form still parses");
+  assert.equal("a # --- @d2pos 1,2".match(POS_RE)[1], "1", "dashed form");
+  assert.equal("a # --- @d2pos -12,300".match(POS_RE)[2], "300");
   assert.equal("a # @d2pos 1,2 x".match(POS_RE), null, "trailing junk after marker");
   assert.equal("a # x @d2pos 1,2".match(POS_RE), null, "no '#' immediately before @d2pos");
   assert.equal("a @d2pos 1,2".match(POS_RE), null, "no comment at all");
@@ -164,8 +165,8 @@ test("fractional/undefined coords round to integer markers", () => {
     showComments: true
   };
   const out = serializeAnnotated(g);
-  assert.ok(out.includes("a # @d2pos 61,-12"), out);
-  assert.ok(out.includes("b # @d2pos 0,0"), out);
+  assert.ok(out.includes("a # --- @d2pos 61,-12"), out);
+  assert.ok(out.includes("b # --- @d2pos 0,0"), out);
 });
 
 test("node without label emits no label:", () => {
@@ -231,6 +232,74 @@ test("edge with comment lines is emitted with them", () => {
   assert.ok(out.includes("# важный переход\nClient -> srv # по HTTPS"), out);
 });
 
+test('""" block comments round-trip as """ blocks (not # lines)', () => {
+  const multi = parseD2('"""\nblock\ncomment\n"""\nx\n');
+  assert.ok(multi.ok, JSON.stringify(multi.error));
+  assert.equal(serializeClean(multi.graph), '"""\nblock\ncomment\n"""\nx');
+  const single = parseD2('"""one line"""\nx\n');
+  assert.ok(single.ok, JSON.stringify(single.error));
+  assert.equal(serializeClean(single.graph), '""" one line """\nx');
+  const empty = parseD2('""""""\nx\n');
+  assert.ok(empty.ok, JSON.stringify(empty.error));
+  assert.equal(serializeClean(empty.graph), '"""  """\nx', "empty block normalizes to d2 fmt");
+});
+
+test('""" block comment: annotated = clean + markers (stripMarkers parity)', () => {
+  const r = parseD2('"""\nnote\n"""\nx\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(stripMarkers(serializeAnnotated(r.graph)), serializeClean(r.graph));
+});
+
+test('""" block comment in a nested scope re-emits indented like d2 fmt', () => {
+  const r = parseD2('n: {\n  """\n  deep\n    content\n  """\n  child\n}\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(serializeClean(r.graph), [
+    'n: {',
+    '  """',
+    '  deep',
+    '    content',
+    '  """',
+    '  child',
+    '}'
+  ].join("\n"));
+});
+
+test('""" block comment plus trailing # comment both preserved (mixed entries)', () => {
+  const r = parseD2('"""\nnote\nlines\n"""\n# plain\nx\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const text = serializeClean(r.graph);
+  assert.equal(text, '"""\nnote\nlines\n"""\n# plain\nx');
+  const r2 = parseD2(text);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.deepEqual(r2.graph.headerComments, [{ text: "note\nlines", block: true }, "plain"]);
+});
+
+test('d2 CLI: re-emitted """ block comments are byte-identical after d2 fmt', async (t) => {
+  try {
+    await exec("d2", ["--version"]);
+  } catch {
+    t.skip("d2 CLI not available");
+    return;
+  }
+  const dir = await mkdtemp(join(tmpdir(), "d2ser-"));
+  try {
+    const src = '"""\nheader note\nlines\n"""\na -> b\n"""\nedge note\n"""\nc\n';
+    const r = parseD2(src);
+    assert.ok(r.ok, JSON.stringify(r.error));
+    const text = serializeClean(r.graph);
+    const file = join(dir, "blocks.d2");
+    await writeFile(file, text + "\n");
+    await exec("d2", [file, join(dir, "blocks.svg")]);
+    const fmtFile = join(dir, "blocks-fmt.d2");
+    await writeFile(fmtFile, text + "\n");
+    await exec("d2", ["fmt", fmtFile]);
+    const formatted = await readFile(fmtFile, "utf8");
+    assert.equal(formatted.trim(), text, "our emission is d2-fmt-stable (block comments stay as \"\"\" blocks)");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("d2 CLI: clean and annotated compile to identical structure", async (t) => {
   try {
     await exec("d2", ["--version"]);
@@ -282,7 +351,7 @@ test("block string node: emits key: |tag … | with the marker on the closer lin
     idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
   };
   assert.equal(serializeClean(g), "x: |md\n  line one\n  line two\n|");
-  assert.equal(serializeAnnotated(g), "x: |md\n  line one\n  line two\n| # @d2pos 12,340");
+  assert.equal(serializeAnnotated(g), "x: |md\n  line one\n  line two\n| # --- @d2pos 12,340");
   assert.equal(stripMarkers(serializeAnnotated(g)), serializeClean(g), "parity: annotated = clean + markers");
 });
 
@@ -442,7 +511,7 @@ test("parity: array-value nodes carry markers on the value line", () => {
     idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
   };
   assert.equal(serializeClean(g), "x: [a, b]");
-  assert.equal(serializeAnnotated(g), "x: [a, b] # @d2pos 4,90");
+  assert.equal(serializeAnnotated(g), "x: [a, b] # --- @d2pos 4,90");
   assert.equal(stripMarkers(serializeAnnotated(g)), serializeClean(g), "parity: annotated = clean + markers");
 });
 

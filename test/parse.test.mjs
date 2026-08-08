@@ -65,12 +65,12 @@ const DEMO_CLEAN = [
 ].join("\n");
 
 const DEMO_ANNOTATED = [
-  "Client # @d2pos 60,300",
-  '"API Server": { # @d2pos 340,230',
-  "  Database # @d2pos 40,60",
-  "  Cache # @d2pos 40,170",
+  "Client # --- @d2pos 60,300",
+  '"API Server": { # --- @d2pos 340,230',
+  "  Database # --- @d2pos 40,60",
+  "  Cache # --- @d2pos 40,170",
   "}",
-  "Worker # @d2pos 340,520",
+  "Worker # --- @d2pos 340,520",
   "",
   'Client -> "API Server" {label: HTTPS}',
   '"API Server" -> Worker {label: queue}',
@@ -765,13 +765,13 @@ test('""" after a | block string stays plain text inside the block (lexer order)
 test('""" block comments: multi-line, single-line, indent-stripped', () => {
   const multi = parseD2('"""\nblock\ncomment\n"""\nx\n');
   assert.ok(multi.ok, JSON.stringify(multi.error));
-  assert.deepEqual(multi.graph.headerComments, ["block\ncomment"]);
+  assert.deepEqual(multi.graph.headerComments, [{ text: "block\ncomment", block: true }]);
   const single = parseD2('"""one line"""\nx\n');
   assert.ok(single.ok, JSON.stringify(single.error));
-  assert.deepEqual(single.graph.headerComments, ["one line"]);
+  assert.deepEqual(single.graph.headerComments, [{ text: "one line", block: true }]);
   const ind = parseD2('"""\n  indented\n  lines\n"""\nx\n');
   assert.ok(ind.ok, JSON.stringify(ind.error));
-  assert.deepEqual(ind.graph.headerComments, ["indented\nlines"]);
+  assert.deepEqual(ind.graph.headerComments, [{ text: "indented\nlines", block: true }]);
 });
 
 test('""" in statement position after a word is plain text (matches d2 lexer)', () => {
@@ -792,7 +792,7 @@ test('""" block comment inside edge attribute block', () => {
   const r = parseD2('a -> b {\n  """\n  edge note\n  """\n  label: hi\n}\n');
   assert.ok(r.ok, JSON.stringify(r.error));
   const e = r.graph.edges[0];
-  assert.deepEqual(e.comments, ["edge note"]);
+  assert.deepEqual(e.comments, [{ text: "edge note", block: true }]);
 });
 
 test("serializer emits multi-line comments as separate # lines, round-trip stable", () => {
@@ -862,6 +862,24 @@ test("marker line on edge line is kept as trailing comment, never applied as pos
   const e = r.graph.edges[0];
   assert.equal(e.trailingComment, "@d2pos 1,2");
   assert.equal(e.hasPos, undefined);
+});
+
+test("# --- @d2pos marker (dashed form) parses like the legacy form", () => {
+  const r = parseD2("Client # note # --- @d2pos 60,300\n\"API Server\" # --- @d2pos 340,230\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const cl = r.graph.nodes.find((n) => n.id === "Client");
+  assert.equal(cl.trailingComment, "note", "user comment kept, dashes consumed by the marker");
+  assert.equal(cl.hasPos, true);
+  assert.equal(cl.x, 60);
+  assert.equal(cl.y, 300);
+  const srv = r.graph.nodes.find((n) => n.id === "API Server");
+  assert.equal(srv.trailingComment, null);
+  assert.equal(srv.x, 340);
+  assert.equal(srv.y, 230);
+  const bare = parseD2("x # --- @d2pos -5,10\n");
+  assert.ok(bare.ok, JSON.stringify(bare.error));
+  assert.equal(bare.graph.nodes[0].x, -5);
+  assert.equal(bare.graph.nodes[0].trailingComment, null);
 });
 
 test("d2 CLI: parsed round-trips (clean and annotated) compile to identical structure", async (t) => {

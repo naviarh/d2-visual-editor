@@ -1,8 +1,8 @@
 (function (global) {
   "use strict";
 
-  var POS_RE = /#\s*@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
-  var POS_INNER_RE = /\s*#?\s*@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
+  var POS_RE = /#\s*(?:---\s*)?@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
+  var POS_INNER_RE = /\s*#?\s*(?:---\s*)?@d2pos\s*(-?\d+),\s*(-?\d+)\s*$/;
 
   var RESERVED = {
     "label": 1, "shape": 1, "style": 1, "width": 1, "height": 1, "icon": 1,
@@ -413,11 +413,12 @@
 
     // D2 parseComment: consecutive `#` lines (no blank line between them) form
     // one comment, joined with "\n". Block comments (`"""`) are self-contained
-    // and never merge with following lines.
+    // and never merge with following lines; they are stored as
+    // `{ text, block:true }` so the serializer can restore the `"""` form.
     function collectComment() {
       var t = next();
       var text = t.text;
-      if (t.block) return text;
+      if (t.block) return { text: t.text, block: true };
       var cLine = t.line;
       while (true) {
         var nt = peek();
@@ -522,6 +523,7 @@
     }
 
     function extractMarker(text) {
+      if (text && typeof text === "object") return null;
       var m = POS_INNER_RE.exec(text);
       if (!m) return null;
       return { x: parseInt(m[1], 10), y: parseInt(m[2], 10), rest: text.replace(POS_INNER_RE, "").trim() };
