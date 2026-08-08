@@ -11,12 +11,13 @@
 | `docs/plans/d2-editor-sync.md` | Исходный план реализации (этапы 1–7 выполнены) |
 | `docs/plans/d2-language-coverage.md` | **Опорный справочник**: синтаксис и семантика языка D2 со статусами реализации (✅/⚠️/❌) |
 | `docs/plans/d2-visualization-coverage.md` | **Опорный справочник**: возможности визуализации D2 со статусами реализации (✅/⚠️/❌) |
+| `docs/xyflow-system-usage.md` | Справочник по `@xyflow/system`: что уже используется, что можно взять вместо самописного кода, что использовать не стоит, правила (офлайн, D2-паритет) |
 | `AGENTS.md` (корень) | Инструкции для ИИ-агентов: опора (§0), инварианты, семантика D2, приоритеты, правила работы |
 
 ## Быстрый старт
 
 ```bash
-# открыть приложение (без сборки; нужен интернет для @xyflow/system с CDN)
+# открыть приложение (без сборки и без интернета; @xyflow/system — локальный vendor)
 xdg-open index.html
 
 # юнит-тесты (188): node:test, без внешних зависимостей
@@ -32,6 +33,7 @@ CHROME=/usr/bin/google-chrome-stable npm run test:ui
 index.html            весь UI (без сборки): split-панели «Код D2» и «Схема»; split-button «Копировать» с меню
                       (Вставить/Заменить/Импорт…/Экспорт…/Экспорт в SVG; Draw.io и Mermaid — стабы);
                       схема на @xyflow/system; dblclick-rename через модальный диалог
+vendor/               локальная UMD-сборка @xyflow/system (vendor/xyflow-system-0.0.79.umd.js, без CDN)
 js/d2-serialize.js    граф → D2-текст (чистый и аннотированный)        [window.d2mod]
 js/d2-parse.js        D2-текст → граф (токенизатор + parseD2)          [window.d2parse]
 js/d2-merge.js        слияние распарсенного графа с текущим             [window.d2merge]
