@@ -182,8 +182,9 @@ test('literal priority: "b.c" exists, b.c -> x resolves to the literal', () => {
   const g = r.graph;
   const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
   assert.ok(byId["b.c"], "literal node exists");
-  assert.equal(g.edges.length, 1, "both references hit the same literal node");
+  assert.equal(g.edges.length, 2, "repeated connections stay separate (no dedup)");
   assert.equal(g.edges[0].source, "b.c");
+  assert.equal(g.edges[1].source, "b.c");
 });
 
 test("nested edges: edges inside a container are scoped to it", () => {
@@ -377,14 +378,25 @@ test("D2 string parity: keys, paths and arrows per v0.7.1", () => {
     ["a--b\n", ["a", "b"], "-- is an edge"],
     ["a -- b\n", ["a", "b"], "-- with spaces"],
     ["a -* b\n", ["a", "b"], "-*"],
-    ["a <- b\n", ["b", "a"], "<- reverses"],
-    ["a <-> b\n", ["a", "b"], "<-> forward"]
+    ["a <- b\n", ["a", "b"], "<- keeps text order"],
+    ["a <-> b\n", ["a", "b"], "<-> text order"]
   ];
   for (const [src, pair, why] of pairs) {
     const r = parseD2(src);
     assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
     assert.deepEqual(r.graph.edges.map((e) => [e.source, e.target]), [pair], why);
   }
+  assert.deepEqual(
+    parseD2("a <- b\n").graph.edges.map((e) => e.dir),
+    ["<-"], "reverse direction is stored, not swapped");
+  assert.deepEqual(
+    parseD2("a <-> b\n").graph.edges.map((e) => e.dir),
+    ["<->"], "bidirectional direction is stored");
+  assert.deepEqual(
+    parseD2("a -- b\n").graph.edges.map((e) => e.dir),
+    ["--"], "no-arrow direction is stored");
+  const fwd = parseD2("a -> b\n").graph.edges[0];
+  assert.equal(fwd.dir, undefined, "forward direction is the default (no dir field)");
   const group = parseD2("(a, b) -> c\n");
   assert.ok(group.ok);
   assert.deepEqual(group.graph.nodes.map((n) => n.id), ["(a, b)", "c"], "edge groups are not D2 v0.7.1");
@@ -397,6 +409,26 @@ test("D2 string parity: keys, paths and arrows per v0.7.1", () => {
   const n = q.graph.nodes[0];
   assert.equal(n.id, "a b");
   assert.equal(n.label, "x");
+});
+
+test("arrow directionality: one-line chained connections keep each link's direction", () => {
+  const r = parseD2("Stage One -> Stage Two <- Stage Three <-> Stage Four\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(
+    r.graph.edges.map((e) => [e.source, e.target, e.dir || "->"]),
+    [["Stage One", "Stage Two", "->"], ["Stage Two", "Stage Three", "<-"], ["Stage Three", "Stage Four", "<->"]],
+    "each link keeps text order and its own direction");
+});
+
+test("arrow directionality: repeated connections are distinct edges", () => {
+  const r = parseD2("a -> b\na -> b\na <- b\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges.length, 3, "three records, three edges");
+  assert.deepEqual(
+    r.graph.edges.map((e) => [e.source, e.target, e.dir || "->"]),
+    [["a", "b", "->"], ["a", "b", "->"], ["a", "b", "<-"]],
+    "identical records stay separate, reverse stays separate too");
+  assert.notEqual(r.graph.edges[0].id, r.graph.edges[1].id, "distinct ids");
 });
 
 test("D2 string parity: value then container on the same line sets the label", () => {
@@ -938,4 +970,20 @@ test("shape on a container applies to the container node", () => {
   const a = g.nodes.find((n) => n.id === "a");
   assert.equal(a.shape, "cloud");
   assert.deepEqual(a.rawAttrs, []);
+});
+
+test("arrow directionality: all four forms round-trip parse -> serialize -> parse", () => {
+  const forms = ["a -> b\n", "a <- b\n", "a <-> b\n", "a -- b\n"];
+  for (const src of forms) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    const out = serializeClean(r.graph);
+    const r2 = parseD2(out);
+    assert.ok(r2.ok, "re-parse of " + JSON.stringify(out));
+    assert.deepEqual(
+      r2.graph.edges.map((e) => [e.source, e.target, e.dir || "->"]),
+      r.graph.edges.map((e) => [e.source, e.target, e.dir || "->"]),
+      src + " round-trips");
+    assert.ok(out.includes(src.trim()), src + " is emitted in its own form");
+  }
 });

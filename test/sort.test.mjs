@@ -188,3 +188,15 @@ test("does not mutate the input graph", () => {
   sortByArrows(g);
   assert.equal(JSON.stringify(g), before, "input graph untouched");
 });
+
+test("edge directionality: a <- b sorts the semantic source (b) before a", () => {
+  const g = graphOf([node("a"), node("b")], [edge("e1", "a", "b", { dir: "<-" })], ["a", "b"]);
+  const s = sortByArrows(g);
+  assert.ok(posOf(s.order, "b") < posOf(s.order, "a"), "arrow flow b -> a comes first");
+});
+
+test("edge directionality: <-> behaves like a forward edge for ordering", () => {
+  const g = graphOf([node("a"), node("b")], [edge("e1", "a", "b", { dir: "<->" })], ["b", "a"]);
+  const s = sortByArrows(g);
+  assert.ok(posOf(s.order, "a") < posOf(s.order, "b"), "a precedes b");
+});

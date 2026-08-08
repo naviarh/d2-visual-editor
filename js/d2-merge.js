@@ -175,7 +175,8 @@
       return pnode ? pnode.id : null;
     }
 
-    // current edges -> buckets by (new source, new target); edges to removed nodes drop out
+    // current edges -> buckets by (new source, new target, dir). Direction is
+    // part of the identity: `a <- b` and `b -> a` are distinct connections.
     var byPair = new Map();
     if (hasCurrent) {
       for (var i = 0; i < current.edges.length; i++) {
@@ -183,7 +184,7 @@
         var ns = translateId(ce.source);
         var nt = translateId(ce.target);
         if (ns === null || nt === null) continue;
-        var key = ns + "\u0000" + nt;
+        var key = ns + "\u0000" + nt + "\u0000" + (ce.dir || "->");
         if (!byPair.has(key)) byPair.set(key, []);
         byPair.get(key).push(ce);
       }
@@ -209,7 +210,7 @@
     var edgeIdMap = new Map();
     for (var i4 = 0; i4 < parsed.edges.length; i4++) {
       var pe = parsed.edges[i4];
-      var list = byPair.get(pe.source + "\u0000" + pe.target);
+      var list = byPair.get(pe.source + "\u0000" + pe.target + "\u0000" + (pe.dir || "->"));
       var match = null;
       if (list) {
         for (var li = 0; li < list.length; li++) {

@@ -695,3 +695,133 @@ test("UI E2E: shape selector applies a shape to the selected block", { timeout: 
     await browser.close();
   }
 });
+
+test("UI E2E: direction selector changes the selected edge and sets the default for new edges", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const box = await page.$eval("#edges .edge-hit", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(box.x, box.y);
+    await new Promise((r) => setTimeout(r, 150));
+
+    assert.equal(await page.$eval("#dirSel", (el) => el.disabled), false, "direction selector never disabled");
+    assert.equal(await page.$eval("#dirSel", (el) => el.value), "->", "seed edges are forward");
+
+    await page.select("#dirSel", "<->");
+    await new Promise((r) => setTimeout(r, 200));
+    const selMarkers = await page.$eval("#edges .edge-g.selected path.edge", (el) => ({
+      start: el.getAttribute("marker-start"),
+      end: el.getAttribute("marker-end")
+    }));
+    assert.ok(selMarkers.start && selMarkers.end, "selected edge gets both arrowheads");
+
+    await new Promise((r) => setTimeout(r, 1400));
+    assert.ok((await text(page)).includes("<->"), "<-> emitted into the code");
+
+    // deselect the edge; the current selection becomes the pending default
+    await page.evaluate(() => {
+      document.querySelector("#pane").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    await page.select("#dirSel", "<-");
+    await new Promise((r) => setTimeout(r, 100));
+
+    // create a new edge between two non-container nodes in edge mode
+    await page.click("#btnEdge");
+    const centers = await page.$$eval("#nodes .node:not(.container)", (els) => els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }));
+    await page.mouse.click(centers[0].x, centers[0].y);
+    await new Promise((r) => setTimeout(r, 80));
+    await page.mouse.click(centers[1].x, centers[1].y);
+    await page.waitForSelector("#modal-overlay", { visible: true, timeout: 3000 });
+    await page.click("#modal-ok");
+    await new Promise((r) => setTimeout(r, 1600));
+
+    assert.ok((await text(page)).includes("<-"), "new edge uses the pending reverse direction in code");
+    const startCount = await page.$$eval("#edges .edge-g path.edge",
+      (els) => els.filter((el) => !!el.getAttribute("marker-start")).length);
+    assert.ok(startCount >= 1, "a rendered edge carries a start arrowhead");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: parallel edges between the same pair draw on distinct trajectories", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    // text-order reversed: the trickiest case (A -> B + B -> A must also fan out)
+    await setText(page, "A -> B\nB -> A");
+    await waitEdit();
+
+    const ys = await page.$$eval("#edges .edge-g path.edge", (els) =>
+      els.map((el) => el.getAttribute("d").split("L").map((c) => Number(c.split(" ")[1]))).flat());
+    const uniq = new Set(ys.filter((y) => !Number.isNaN(y)));
+    assert.ok(uniq.size >= 2, "reversed-order parallel edges are vertically separated");
+
+    const paths = await page.$$eval("#edges .edge-g path.edge", (els) => els.map((el) => el.getAttribute("d")));
+    assert.ok(new Set(paths).size === paths.length, "no two edges share the same trajectory");
+
+    // same-direction duplicates fan out too
+    await setText(page, "A -> B\nA -> B");
+    await waitEdit();
+    const paths2 = await page.$$eval("#edges .edge-g path.edge", (els) => els.map((el) => el.getAttribute("d")));
+    assert.ok(new Set(paths2).size === paths2.length, "duplicate-direction parallel edges are distinct");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: re-clicking an edge deselects it; clicking empty space deselects a block", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const edgeMid = await page.$eval("#edges .edge-hit", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+
+    // like blocks, a second click on the same edge clears its selection
+    await page.mouse.click(edgeMid.x, edgeMid.y);
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(await page.$$eval("#edges .edge-g.selected", (els) => els.length), 1, "first click selects the edge");
+    await page.mouse.click(edgeMid.x, edgeMid.y);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await page.$$eval("#edges .edge-g.selected", (els) => els.length), 0, "second click deselects the edge");
+
+    const node = await page.$eval("#nodes .node:not(.container)", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(node.x, node.y);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await page.$$eval("#nodes .node.selected", (els) => els.length), 1, "clicking a block selects it");
+
+    // like edges, a click on empty space in the visual field clears the block selection
+    const empty = await page.evaluate(() => {
+      const pane = document.querySelector("#pane");
+      const r = pane.getBoundingClientRect();
+      for (let y = r.y + r.height - 20; y > r.y + 40; y -= 30) {
+        for (let x = r.x + r.width - 40; x > r.x + 40; x -= 40) {
+          const el = document.elementFromPoint(x, y);
+          if (el === pane || el === document.querySelector("#viewport")) return { x, y };
+        }
+      }
+      return null;
+    });
+    assert.ok(empty, "found an empty spot in the visual field");
+    await page.mouse.click(empty.x, empty.y);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await page.$$eval("#nodes .node.selected", (els) => els.length), 0, "clicking empty space deselects the block");
+  } finally {
+    await browser.close();
+  }
+});

@@ -272,3 +272,48 @@ test("end-to-end pipeline: rename+insert+delete in annotated text keeps position
     "annotated text is stable through parse+merge"
   );
 });
+
+test("edge directionality: reverse and forward text forms are distinct connections", () => {
+  const g1 = parse("a <- b\nb -> a\n");
+  assert.equal(g1.edges.length, 2, "two records, two edges");
+  const ids = new Set(g1.edges.map((e) => e.id));
+  const out = mergeGraph(g1, g1);
+  assert.equal(out.removed.length, 0);
+  assert.equal(out.added.length, 0);
+  assert.equal(out.graph.edges.length, 2);
+  assert.deepEqual(
+    new Set(out.graph.edges.map((e) => e.id)),
+    ids,
+    "both edges keep their ids (each form is its own connection)");
+});
+
+test("edge directionality: editing -> into <- replaces the connection with the reverse record", () => {
+  const g1 = parse("a -> b\n");
+  const g2 = parse("a <- b\n");
+  const out = mergeGraph(g2, g1);
+  assert.equal(out.graph.edges.length, 1);
+  assert.equal(out.graph.edges[0].dir, "<-", "reverse form wins");
+  assert.deepEqual(
+    [out.graph.edges[0].source, out.graph.edges[0].target],
+    ["a", "b"],
+    "text order preserved");
+});
+
+test("edge directionality: repeated identical records keep ids on re-merge", () => {
+  const g1 = parse("a -> b\na -> b\n");
+  assert.equal(g1.edges.length, 2);
+  const out = mergeGraph(g1, g1);
+  assert.equal(out.graph.edges.length, 2);
+  assert.deepEqual(
+    out.graph.edges.map((e) => e.id),
+    g1.edges.map((e) => e.id),
+    "both records matched in order and kept their ids");
+});
+
+test("edge directionality: direction survives a node rename via record key", () => {
+  const g1 = parse('a <- "b c"\n');
+  const g2 = parse('a <- "b c d"\n');
+  const out = mergeGraph(g2, g1);
+  const e = out.graph.edges[0];
+  assert.equal(e.dir, "<-", "reverse direction kept after the target rename");
+});

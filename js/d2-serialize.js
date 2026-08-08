@@ -283,7 +283,7 @@
     }
     var src = nodePath(byId, ed.source).map(d2Key).join(".");
     var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
-    var line = src + " -> " + tgt;
+    var line = src + " " + (ed.dir || "->") + " " + tgt;
     var lb = ed.labelBlock;
     var plainLabel = ed.label;
     if (!lb && plainLabel && String(ed.label).indexOf("\n") !== -1) {

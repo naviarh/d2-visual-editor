@@ -138,3 +138,20 @@ test("merge added nodes placed sequentially without overlaps", () => {
   const ab = absBox(byId, out.graph.nodes.find((n) => n.id === "a"));
   assert.ok(inside.x >= ab.x && inside.y >= ab.y, "c inside container bounds");
 });
+
+test("edge directionality: <- places the semantic source (right node) left of the target", () => {
+  const g = graphOf(
+    [node("a", { x: 200, y: 100, hasPos: true }), node("b")],
+    [edge("e1", "a", "b", { dir: "<-" })]);
+  const box = placeNewNode(g, "b", { center: { x: 0, y: 0 } });
+  assert.ok(box.x <= 200 - 150 - 32, "b (semantic source) lands left of a");
+  assert.equal(g.nodes[1].hasPos, true, "position committed");
+});
+
+test("edge directionality: <-> places a new target to the right of the source", () => {
+  const g = graphOf(
+    [node("a", { x: 100, y: 100, hasPos: true }), node("b")],
+    [edge("e1", "a", "b", { dir: "<->" })]);
+  const box = placeNewNode(g, "b", { center: { x: 0, y: 0 } });
+  assert.ok(box.x >= 100 + 150 + 32, "b (target) lands right of a");
+});

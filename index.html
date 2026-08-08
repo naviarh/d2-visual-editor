@@ -142,6 +142,7 @@
       <select id="shapeSel" title="Форма выбранного блока" disabled></select>
       <button id="btnGroup">Группировать блоки</button>
       <button id="btnEdge">+ Стрелка</button>
+      <select id="dirSel" title="Направление стрелки"></select>
       <span class="sep"></span>
       <button id="btnSort">Упорядочить по связям</button>
       <span class="sep"></span>
@@ -198,9 +199,18 @@ const modalInput = document.getElementById("modal-input");
 const modalOk = document.getElementById("modal-ok");
 const modalCancel = document.getElementById("modal-cancel");
 const shapeSel = document.getElementById("shapeSel");
+const dirSel = document.getElementById("dirSel");
 
 shapeSel.innerHTML = '<option value="">Тип блока</option>'
   + D2SHP.SHAPE_NAMES.map((s) => '<option value="' + esc(s) + '">' + esc(s) + '</option>').join("");
+
+// "Направление" is the default button label (direct direction); the list also
+// carries the explicit label for each of the four D2 arrow directions.
+dirSel.innerHTML = '<option value="->">Направление</option>'
+  + '<option value="->">Прямое</option>'
+  + '<option value="<-">Обратное</option>'
+  + '<option value="<->">Обе стороны</option>'
+  + '<option value="--">Без стрелки</option>';
 
 modalTitle.addEventListener("pointerdown", (e) => {
   e.preventDefault();
@@ -246,6 +256,10 @@ const STORE_KEY = "d2editor:v1";
 const UI_KEY = "d2editor:ui:v1";
 const GEN_IDLE_MS = 1000;
 const TEXT_EDIT_MS = 3000;
+const EDGE_FANOUT = 21;
+const EDGE_INSET = 6;
+const EDGE_TIP_LEN = 24;
+const EDGE_TIP_W = 12;
 let saveTimer = null;
 let genTimer = null;
 let textTimer = null;
@@ -556,26 +570,31 @@ function nodeShapeBox(n, s) {
   return { w: norm.w, h: norm.h, container: false, shape: n.shape || null };
 }
 
-function edgeGeometry(sa, ss, ta, ts, s, t) {
+function edgeGeometry(sa, ss, ta, ts, s, t, offset, dir) {
   const sb = nodeShapeBox(s, ss), tb = nodeShapeBox(t, ts);
   const scx = sa.x + sb.w / 2, scy = sa.y + sb.h / 2;
   const tcx = ta.x + tb.w / 2, tcy = ta.y + tb.h / 2;
   const adx = tcx - scx, ady = tcy - scy;
-  const border = (cx, cy, box, dx, dy) => {
-    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+  const L = Math.hypot(adx, ady);
+  // Parallel fan-out: shift the center ray perpendicular to itself so several
+  // edges between the same pair draw side by side instead of overlapping.
+  const d = (offset && L > 0) ? offset : 0;
+  const nx = d * (-ady / L), ny = d * (adx / L);
+  // Intersect the shifted ray with the ACTUAL node outline (the outline keeps
+  // its real center), so fanned-out edges touch the shape's contour exactly.
+  const border = (rsx, rsy, box, cx, cy, dx, dy) => {
+    if (dx === 0 && dy === 0) return { x: rsx, y: rsy };
     if (!box.container) {
       const outline = D2SHP.outlinePoints(box.shape, {
         x: cx - box.w / 2, y: cy - box.h / 2, w: box.w, h: box.h
       });
-      const hit = D2SHP.outlineIntersect(outline, cx, cy, dx, dy);
+      const hit = D2SHP.outlineIntersect(outline, rsx, rsy, dx, dy);
       if (hit) return hit;
     }
     const hw = box.w / 2, hh = box.h / 2;
     const s = Math.min(hw / Math.abs(dx), hh / Math.abs(dy));
-    return { x: cx + dx * s, y: cy + dy * s };
+    return { x: rsx + dx * s, y: rsy + dy * s };
   };
-  const sp = border(scx, scy, sb, adx, ady);
-  const tp = border(tcx, tcy, tb, -adx, -ady);
   let spPos, tpPos;
   if (Math.abs(adx) > Math.abs(ady)) {
     spPos = adx > 0 ? XYF.Position.Right : XYF.Position.Left;
@@ -584,25 +603,97 @@ function edgeGeometry(sa, ss, ta, ts, s, t) {
     spPos = ady > 0 ? XYF.Position.Bottom : XYF.Position.Top;
     tpPos = ady > 0 ? XYF.Position.Top : XYF.Position.Bottom;
   }
-  return { sp, tp, spPos, tpPos };
+  const sp = border(scx + nx, scy + ny, sb, scx, scy, adx, ady);
+  const tp = border(tcx + nx, tcy + ny, tb, tcx, tcy, -adx, -ady);
+  // Stop the line short of the border along the approach axis so the sharp
+  // arrowhead tip (which overhangs the path end by EDGE_INSET) is not spoiled
+  // by the line's own stroke width. Only ends that carry an arrowhead are
+  // inset — a plain end stays flush with the node border.
+  const inset = (p, pos) => {
+    switch (pos) {
+      case XYF.Position.Left: return { x: p.x - EDGE_INSET, y: p.y };
+      case XYF.Position.Right: return { x: p.x + EDGE_INSET, y: p.y };
+      case XYF.Position.Top: return { x: p.x, y: p.y - EDGE_INSET };
+      default: return { x: p.x, y: p.y + EDGE_INSET };
+    }
+  };
+  const d2 = dir || "->";
+  const insS = (d2 === "<-" || d2 === "<->");
+  const insT = (d2 === "->" || d2 === "<->");
+  return {
+    sp: insS ? inset(sp, spPos) : sp,
+    tp: insT ? inset(tp, tpPos) : tp,
+    spPos, tpPos
+  };
+}
+
+// SVG <defs> for both arrow markers, shared by the interactive renderer and
+// the SVG export. The triangle is EDGE_TIP_LEN long along the line; its tip is
+// at the local origin, and refX lets the tip overhang the path end by
+// EDGE_INSET (the line itself is shortened by the same amount in edgeGeometry).
+function markerDefs() {
+  return '<defs>'
+    + '<marker id="arrow" viewBox="-24 -6 24 12" refX="' + (-EDGE_INSET)
+    + '" refY="0" markerWidth="24" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">'
+    + '<path d="M -24 -6 L 0 0 L -24 6 z" fill="#8a93a6"/></marker>'
+    + '<marker id="arrow-start" viewBox="0 -6 24 12" refX="' + EDGE_INSET
+    + '" refY="0" markerWidth="24" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">'
+    + '<path d="M 0 0 L 24 -6 L 24 6 z" fill="#8a93a6"/></marker>'
+    + '</defs>';
+}
+
+// SVG marker attributes per edge direction; the start marker is mirrored so the
+// arrowhead points into the source node (like d2's separate start marker).
+function edgeMarkers(ed) {
+  const dir = ed.dir || "->";
+  if (dir === "->") return ' marker-end="url(#arrow)"';
+  if (dir === "<-") return ' marker-start="url(#arrow-start)"';
+  if (dir === "<->") return ' marker-start="url(#arrow-start)" marker-end="url(#arrow)"';
+  return "";
+}
+
+// Group edges by the unordered (source, target) pair and assign each a
+// perpendicular offset so parallel connections (any direction, any text order)
+// draw side by side; a single edge keeps offset 0 (unchanged path).
+function parallelOffsets(edges) {
+  const groups = new Map();
+  for (const ed of edges) {
+    const a = ed.source, b = ed.target;
+    const key = a < b ? a + "\u0000" + b : b + "\u0000" + a;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ed);
+  }
+  const out = new Map();
+  for (const list of groups.values()) {
+    if (list.length === 1) { out.set(list[0], 0); continue; }
+    for (let i = 0; i < list.length; i++) {
+      const ed = list[i];
+      // edgeGeometry computes the perpendicular normal from the text-order ray
+      // (source -> target), which flips for reversed records of the same pair.
+      // Flip the sign too so all edges of the pair fan out to distinct sides.
+      const dirSign = ed.source < ed.target ? 1 : -1;
+      out.set(ed, (i - (list.length - 1) / 2) * EDGE_FANOUT * dirSign);
+    }
+  }
+  return out;
 }
 
 function renderEdges() {
-  let inner = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
-    + '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93a6"></path></marker></defs>';
+  let inner = markerDefs();
+  const offsets = parallelOffsets(edges);
   for (const ed of edges) {
     const s = nodes.get(ed.source), t = nodes.get(ed.target);
     if (!s || !t) continue;
     const sa = absPos(s), ta = absPos(t);
     const ss = boxSize(s), ts = boxSize(t);
-    const g = edgeGeometry(sa, ss, ta, ts, s, t);
+    const g = edgeGeometry(sa, ss, ta, ts, s, t, offsets.get(ed), ed.dir);
     const [path, lx, ly] = XYF.getSmoothStepPath({
       sourceX: g.sp.x, sourceY: g.sp.y, sourcePosition: g.spPos,
       targetX: g.tp.x, targetY: g.tp.y, targetPosition: g.tpPos
     });
     inner += '<g class="edge-g' + (selectedEdgeId === ed.id ? " selected" : "") + '" data-id="' + esc(ed.id) + '">'
       + '<path d="' + path + '" class="edge-hit"></path>'
-      + '<path d="' + path + '" class="edge" marker-end="url(#arrow)"></path>';
+      + '<path d="' + path + '" class="edge"' + edgeMarkers(ed) + '></path>';
     if (ed.label) {
       inner += '<text x="' + lx + '" y="' + ly + '" text-anchor="middle" dominant-baseline="middle" class="elabel">' + esc(ed.label) + '</text>';
     }
@@ -666,6 +757,8 @@ function renderHint() {
   const sel = nodes.get(selectedId);
   shapeSel.disabled = !(sel && !isContainer(sel));
   shapeSel.value = (sel && !isContainer(sel) && sel.shape) ? sel.shape : "";
+  const ed = selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : null;
+  if (ed) dirSel.value = ed.dir || "->";
   let txt = "Клик — выбрать. Drag — двигать. Двойной клик по блоку — переименовать, по стрелке — подпись. Delete — удалить.";
   if (mode === "edge") {
     txt = edgeSrc
@@ -742,12 +835,15 @@ async function handleNodeClick(n) {
     }
     const src = edgeSrc;
     edgeSrc = null;
-    if (!edges.some((ed) => ed.source === src && ed.target === n.id)) {
-      const label = (await openEditDialog({ title: "Подпись стрелки (необязательно):", value: "" }) || "").trim();
-      const id = "e" + (idCounter++);
-      edges.push({ id, source: src, target: n.id, label });
-      order.push(id);
-    }
+    // Every creation is a new connection (d2: "repeated connections declare
+    // new ones"); the chosen direction becomes the new edge's direction.
+    const label = (await openEditDialog({ title: "Подпись стрелки (необязательно):", value: "" }) || "").trim();
+    const id = "e" + (idCounter++);
+    const edge = { id, source: src, target: n.id, label };
+    const dir = dirSel.value;
+    if (dir !== "->") edge.dir = dir;
+    edges.push(edge);
+    order.push(id);
     render();
     return;
   }
@@ -948,6 +1044,16 @@ shapeSel.onchange = () => {
   const v = shapeSel.value;
   if (!v) delete n.shape;
   else n.shape = v;
+  render();
+};
+// With an edge selected the choice changes its direction; otherwise it becomes
+// the default direction for new edges (button stays enabled either way).
+dirSel.onchange = () => {
+  const ed = selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : null;
+  if (!ed) return;
+  const v = dirSel.value;
+  if (v === "->") delete ed.dir;
+  else ed.dir = v;
   render();
 };
 document.getElementById("btnZoomIn").onclick = () => panZoom.scaleBy(1.3);
@@ -1170,10 +1276,11 @@ function buildSVG() {
   }
 
   const edgeList = [];
+  const offsets = parallelOffsets(edges);
   for (const ed of edges) {
     const s = nodes.get(ed.source), t = nodes.get(ed.target);
     if (!s || !t) continue;
-    const g = edgeGeometry(absPos(s), boxSize(s), absPos(t), boxSize(t), s, t);
+    const g = edgeGeometry(absPos(s), boxSize(s), absPos(t), boxSize(t), s, t, offsets.get(ed), ed.dir);
     const [path, lx, ly] = XYF.getSmoothStepPath({
       sourceX: g.sp.x, sourceY: g.sp.y, sourcePosition: g.spPos,
       targetX: g.tp.x, targetY: g.tp.y, targetPosition: g.tpPos
@@ -1204,7 +1311,7 @@ function buildSVG() {
   // layer 3: edges with labels
   for (const it of edgeList) {
     const t = it.ed.label != null ? esc(it.ed.label) : "";
-    body += '<path d="' + it.path + '" fill="none" stroke="#8a93a6" stroke-width="2" marker-end="url(#arrow)"/>';
+    body += '<path d="' + it.path + '" fill="none" stroke="#8a93a6" stroke-width="2"' + edgeMarkers(it.ed) + '/>';
     if (t) {
       const m = svgFontMetrics("15px " + SVG_FONT);
       const y = it.ly + (m.ascent - m.descent) / 2;
@@ -1249,8 +1356,7 @@ function buildSVG() {
 
   return '<?xml version="1.0" encoding="UTF-8"?>\n'
     + '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="' + x0 + ' ' + y0 + ' ' + w + ' ' + h + '">\n'
-    + '<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
-    + '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8a93a6"/></marker></defs>\n'
+    + markerDefs() + '\n'
     + '<rect x="' + x0 + '" y="' + y0 + '" width="' + w + '" height="' + h + '" fill="#ffffff"/>\n'
     + body
     + '</svg>\n';
@@ -1376,19 +1482,20 @@ svgEl.addEventListener("click", (e) => {
     renameEdge(g.dataset.id);
   } else {
     selectedId = null;
-    selectedEdgeId = g.dataset.id;
+    selectedEdgeId = selectedEdgeId === g.dataset.id ? null : g.dataset.id;
     render();
   }
 });
 
-function clearEdgeSelection(e) {
+function clearSelection(e) {
   if (e.target !== pane && e.target !== viewportEl) return;
-  if (selectedEdgeId) {
+  if (selectedId || selectedEdgeId) {
+    selectedId = null;
     selectedEdgeId = null;
     render();
   }
 }
-pane.addEventListener("click", clearEdgeSelection);
+pane.addEventListener("click", clearSelection);
 
 const DEFAULT_SEED = [
   "Client # @d2pos 80,492",

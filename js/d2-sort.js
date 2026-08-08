@@ -39,6 +39,14 @@
   // Incoming edges are counted within the current scope only (direct children
   // of a container / top-level roots), never globally. Cycles are broken by a
   // visited set (order is "roughly topological"). Deterministic in edge order.
+  // Semantic flow of an edge: `a <- b` points from b to a. Sorting follows the
+  // arrow direction, so `<-` edges connect the semantic source to the target.
+  function edgeEndpoints(e) {
+    return e.dir === "<-"
+      ? { source: e.target, target: e.source }
+      : { source: e.source, target: e.target };
+  }
+
   function sortByArrows(graph) {
     graph = graph || { nodes: [], edges: [] };
     var byId = indexNodes(graph);
@@ -46,9 +54,9 @@
 
     var outBy = {};
     for (var i = 0; i < graph.edges.length; i++) {
-      var e = graph.edges[i];
-      if (!outBy[e.source]) outBy[e.source] = [];
-      outBy[e.source].push(e);
+      var ep = edgeEndpoints(graph.edges[i]);
+      if (!outBy[ep.source]) outBy[ep.source] = [];
+      outBy[ep.source].push(graph.edges[i]);
     }
 
     var currentOrder = [];
@@ -116,8 +124,9 @@
         var outs = outBy[members[a]] || [];
         for (var b = 0; b < outs.length; b++) {
           var e = outs[b];
-          if (e.source !== e.target && memberSet.has(e.target)) {
-            inScope.set(e.target, (inScope.get(e.target) || 0) + 1);
+          var ep = edgeEndpoints(e);
+          if (ep.source !== ep.target && memberSet.has(ep.target)) {
+            inScope.set(ep.target, (inScope.get(ep.target) || 0) + 1);
           }
         }
       }
@@ -131,8 +140,9 @@
         var outs = outBy[m] || [];
         for (var v = 0; v < outs.length; v++) {
           var e = outs[v];
-          if (e.source === e.target) continue;
-          var t = newById.get(e.target);
+          var ep = edgeEndpoints(e);
+          if (ep.source === ep.target) continue;
+          var t = newById.get(ep.target);
           if (!t) continue;
           if (memberSet.has(t.id)) {
             visit(t.id);

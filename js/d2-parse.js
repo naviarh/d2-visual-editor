@@ -16,7 +16,7 @@
   // delimiters and every token is a whole word run. Terminators depend on
   // context: `a: a.b` is the label "a.b", but in a key `.` splits a path.
   // Everywhere: \r \n ; # { } [ ]  — plus in keys: : . < > & and edge
-  // markers -- -> -* *- (a single `-` is literal: `a-b` is one key).
+  // markers -- -> <- <-> -* *- (a single `-` is literal: `a-b` is one key).
   function isValueTerm(ch) {
     return ch === "\r" || ch === "\n" || ch === ";" || ch === "#" ||
       ch === "{" || ch === "}" || ch === "[" || ch === "]";
@@ -376,7 +376,6 @@
     };
     var nodesByPath = new Map();
     var nodeById = new Map();
-    var edgesByTriple = new Map();
     var orderSet = new Set();
     var scopeStack = [null];
     var pending = [[]];
@@ -730,18 +729,18 @@
       return segs;
     }
 
-    function createEdge(srcPath, tgtPath) {
+    function createEdge(srcPath, tgtPath, dir) {
       var src = resolvePath(srcPath);
       var tgt = resolvePath(tgtPath);
-      var triple = src.id + "\u0000" + tgt.id + "\u0000";
-      var ex = edgesByTriple.get(triple);
-      if (ex) return ex;
+      // Every connection record in the text is a distinct edge (d2: "repeated
+      // connections declare new ones"). The text-order source/target and the
+      // arrow form (`->`, `<-`, `<->`, `--`) are preserved as written.
       var ed = {
         id: "e" + (graph.idCounter++), source: src.id, target: tgt.id, label: null,
         comments: [], trailingComment: null, rawAttrs: []
       };
+      if (dir !== "->") ed.dir = dir;
       graph.edges.push(ed);
-      edgesByTriple.set(triple, ed);
       addToOrder(ed.id);
       return ed;
     }
@@ -759,13 +758,15 @@
           if (peekIs(",")) { next(); continue; }
           break;
         }
-        // D2 v0.7.1: `a <- b` means edge b -> a (source on the right).
-        // `<->` is bidirectional; we model it as one forward edge.
-        var rev = a.value === "<-";
+        // Text order is preserved: `a <- b` keeps source=a, target=b and stores
+        // dir="<-" (the arrowhead renders at the source end). Semantic flow for
+        // layout/sort is derived from `dir` by consumers. `-*`/`*-` are plain
+        // forward edges (d2 edge marker shapes, not directionality).
+        var dir = a.value;
+        if (dir === "-*" || dir === "*-") dir = "->";
         for (var si = 0; si < sources.length; si++) {
           for (var ti = 0; ti < targets.length; ti++) {
-            if (rev) edges.push(createEdge(targets[ti], sources[si]));
-            else edges.push(createEdge(sources[si], targets[ti]));
+            edges.push(createEdge(sources[si], targets[ti], dir));
           }
         }
         sources = targets;

@@ -97,11 +97,19 @@
     return { x: anchorX, y: anchorY };
   }
 
+  // Semantic flow of an edge: `a <- b` points from b to a. Text order is kept
+  // in the model, so layout must follow the arrow direction.
+  function edgeEndpoints(e) {
+    return e.dir === "<-"
+      ? { source: e.target, target: e.source }
+      : { source: e.source, target: e.target };
+  }
+
   function firstNeighbor(graph, nodeId) {
     for (var i = 0; i < graph.edges.length; i++) {
-      var e = graph.edges[i];
-      if (e.source === nodeId) return { id: e.target, direction: 1 };
-      if (e.target === nodeId) return { id: e.source, direction: -1 };
+      var ep = edgeEndpoints(graph.edges[i]);
+      if (ep.source === nodeId) return { id: ep.target, direction: 1 };
+      if (ep.target === nodeId) return { id: ep.source, direction: -1 };
     }
     return null;
   }
