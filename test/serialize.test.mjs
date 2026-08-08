@@ -468,7 +468,7 @@ test("d2Value: multi-line label falls back to a block string when re-parsed", ()
   assert.equal(label, "line one\nline two");
 });
 
-test("graph label with newline but no labelBlock is emitted as a block string", () => {
+test("graph label with newline but no labelBlock is emitted as escaped \\n (not a block string)", () => {
   const g = {
     v: 2,
     nodes: [{
@@ -480,11 +480,37 @@ test("graph label with newline but no labelBlock is emitted as a block string", 
     headerComments: [], trailingComments: [],
     idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
   };
-  assert.equal(serializeClean(g), "x: |-md\n  l1\n  l2\n-|");
-  const r = parseD2(serializeClean(g));
+  assert.equal(serializeClean(g), 'x: {label: "l1 \\n l2"}');
+  assert.ok(!serializeClean(g).includes("|md"), "no block string synthesized");
+  const r = parseD2(serializeClean(g) + "\n");
   assert.ok(r.ok, JSON.stringify(r.error));
-  assert.equal(r.graph.nodes[0].label, "l1\nl2");
+  assert.equal(r.graph.nodes[0].label, "l1 \n l2", "re-parse gains the normalized spaces");
   assert.equal(serializeClean(r.graph), serializeClean(g), "stable");
+});
+
+test("multi-line labels keep the \\n escape in code (d2 fmt form), round-trip stable", () => {
+  const cases = [
+    ["блок \\n первый", '"блок \\n первый"'],
+    ['"блок \\n второй"', '"блок \\n второй"'],
+    ["a -> b: связь \\n первая", 'a\nb\n\na -> b {label: "связь \\n первая"}'],
+    ['с -> в {label: "связь \\n вторая"}', '"с"\n"в"\n\n"с" -> "в" {label: "связь \\n вторая"}'],
+    ["block3: блок\\nтретий", 'block3: {label: "блок \\n третий"}']
+  ];
+  for (const [src, expected] of cases) {
+    const r = parseD2(src + "\n");
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    const out = serializeClean(r.graph);
+    assert.equal(out, expected, src);
+    assert.ok(out.includes("\\n"), "the code editor keeps the \\n escape: " + JSON.stringify(out));
+    assert.ok(!out.includes("|md"), "no block string synthesized: " + JSON.stringify(out));
+    const r2 = parseD2(out + "\n");
+    assert.ok(r2.ok, JSON.stringify(r2.error));
+    assert.equal(serializeClean(r2.graph), out, "stable under re-serialize: " + src);
+  }
+  const r = parseD2(cases[0][0] + "\n");
+  assert.ok(r.ok);
+  assert.ok(r.graph.nodes[0].label.includes("\n"), "parsed label contains a real newline");
+  assert.equal(r.graph.nodes[0].label, "блок \n первый");
 });
 
 test("attribute-array values round-trip verbatim (nodes and edges)", () => {

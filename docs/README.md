@@ -20,10 +20,10 @@
 # открыть приложение (без сборки и без интернета; @xyflow/system — локальный vendor)
 xdg-open index.html
 
-# юнит-тесты (188): node:test, без внешних зависимостей
+# юнит-тесты (200): node:test, без внешних зависимостей
 npm test
 
-# E2E (20 сценариев) — нужен системный Chrome
+# E2E (22 сценария) — нужен системный Chrome
 CHROME=/usr/bin/google-chrome-stable npm run test:ui
 ```
 

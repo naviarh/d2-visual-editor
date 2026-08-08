@@ -44,6 +44,31 @@
     }
   }
 
+  // Decode D2 escapes across a whole string the way the scanner does for
+  // double-quoted values: known escapes decode, `\`+newline is a line
+  // continuation (both dropped), unknown escapes drop the backslash. Used by
+  // the UI dialogs so that `\n` typed by the user means a real newline.
+  function decodeEscapes(s) {
+    var out = "";
+    for (var i = 0; i < s.length; i++) {
+      var c = s[i];
+      if (c !== "\\") {
+        out += c;
+        continue;
+      }
+      var nx = s[i + 1];
+      if (nx === undefined) { out += c; break; }
+      if (nx === "\n" || nx === "\r") {
+        if (nx === "\r" && s[i + 2] === "\n") i++;
+        i++;
+        continue;
+      }
+      out += decodeEscape(nx);
+      i++;
+    }
+    return out;
+  }
+
   // d2parser trimSpaceAfterLastNewline: drop trailing whitespace, and if the
   // last line is empty, drop the final newline too.
   function trimSpaceAfterLastNewline(s) {
@@ -965,7 +990,8 @@
     RESERVED: RESERVED,
     tokenize: tokenize,
     parseD2: parseD2,
-    inlineIds: inlineIds
+    inlineIds: inlineIds,
+    decodeEscapes: decodeEscapes
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

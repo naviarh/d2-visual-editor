@@ -5,9 +5,9 @@
 
   // D2 escapes for double-quoted emission: backslash, quote, `$` (a
   // substitution start in values) and the control chars of the D2 escape set.
-  // A real newline is intentionally NOT emitted here — d2 would decode `\n`
-  // inside quotes to a line break and fail to close the string; multi-line
-  // values are emitted as block strings by the callers.
+  // A real newline is emitted as `\n` and normalized to a single space on each
+  // side (`a \n b`): d2 decodes it back on parse, the string still closes, and
+  // the code reads easier even when the user wrote the break without spaces.
   function d2Escape(s) {
     return String(s)
       .replace(/\\/g, "\\\\")
@@ -15,7 +15,7 @@
       .replace(/\$/g, "\\$")
       .replace(/\x08/g, "\\b")
       .replace(/\x09/g, "\\t")
-      .replace(/\x0A/g, "\\n")
+      .replace(/[ \t]*\x0A[ \t]*/g, " \\n ")
       .replace(/\x0B/g, "\\v")
       .replace(/\x0C/g, "\\f")
       .replace(/\x0D/g, "\\r");
@@ -264,13 +264,8 @@
       });
     }
     var lb = n.labelBlock;
-    var plainLabel = n.label != null && n.label !== n.id;
-    if (!lb && plainLabel && String(n.label).indexOf("\n") !== -1) {
-      // A multi-line label without a parsed block: emit it as a block string.
-      lb = { tag: "md", quote: "-", value: String(n.label) };
-    }
     var blockLabel = !!lb;
-    plainLabel = plainLabel && !blockLabel;
+    var plainLabel = n.label != null && n.label !== n.id && !blockLabel;
 
     // Emit a `{ … }` body. A single simple attribute becomes one line when the
     // reference text says the block is inline (or by default, when there is no
@@ -346,9 +341,6 @@
     var line = src + " " + (ed.dir || "->") + " " + tgt;
     var lb = ed.labelBlock;
     var plainLabel = ed.label;
-    if (!lb && plainLabel && String(ed.label).indexOf("\n") !== -1) {
-      lb = { tag: "md", quote: "-", value: String(ed.label) };
-    }
     if (lb) {
       var bi = emitBlockString(lines, line + ": ", lb);
       if (ed.trailingComment) lines[bi] += " # " + ed.trailingComment;

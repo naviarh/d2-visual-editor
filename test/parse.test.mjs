@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { parseD2, inlineIds } = require("../js/d2-parse.js");
+const { parseD2, inlineIds, decodeEscapes } = require("../js/d2-parse.js");
 const { serializeClean, serializeAnnotated, stripMarkers } = require("../js/d2-serialize.js");
 const exec = promisify(execFile);
 
@@ -1036,4 +1036,14 @@ test("arrow directionality: all four forms round-trip parse -> serialize -> pars
       src + " round-trips");
     assert.ok(out.includes(src.trim()), src + " is emitted in its own form");
   }
+});
+
+test("decodeEscapes: D2 escape set, unknown escapes drop the backslash, \\n means newline", () => {
+  assert.equal(decodeEscapes("a\\nb"), "a\nb");
+  assert.equal(decodeEscapes("\\t\\\"\\$\\\\"), "\t\"$\\");
+  assert.equal(decodeEscapes("\\r\\b\\f\\v\\a"), "\r\b\f\x0B\x07");
+  assert.equal(decodeEscapes("C:\\Users"), "C:Users");
+  assert.equal(decodeEscapes("a\\\\nb"), "a\\nb");
+  assert.equal(decodeEscapes("line 1\\nline 2"), "line 1\nline 2");
+  assert.equal(decodeEscapes("backslash\\"), "backslash\\");
 });

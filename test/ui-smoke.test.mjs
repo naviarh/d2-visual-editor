@@ -864,3 +864,83 @@ test("UI E2E: re-clicking an edge deselects it; clicking empty space deselects a
     await browser.close();
   }
 });
+
+test("UI E2E: \\n in node/edge labels renders as a line break and stays as \\n in the code", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+    await setText(page, "блок \\n первый\nblock3: блок\\nтретий\na -> b: связь \\n первая");
+    await waitEdit();
+
+    // the code editor keeps the \n escapes exactly as typed
+    const txt = await text(page);
+    assert.ok(txt.includes("\\n"), "code editor keeps the escape: " + JSON.stringify(txt));
+    assert.ok(!txt.includes("|-md"), "no block strings synthesized: " + JSON.stringify(txt));
+
+    // node labels carry a real line break into the DOM (white-space: pre-line renders it)
+    const breaks = await page.$$eval("#nodes .node .nlabel", (els) => els.map((e) => e.textContent.indexOf("\n") >= 0));
+    assert.ok(breaks.filter(Boolean).length >= 2, "node labels render a line break: " + JSON.stringify(breaks));
+    assert.equal(await page.$$eval("#nodes .node .nlabel", (els) => els.length), 4, "three blocks + implicit a, b rendered");
+
+    // the edge label is split into tspans on distinct baselines
+    const tspans = await page.$$eval("#edges .elabel tspan", (els) => els.map((e) => e.getAttribute("y")));
+    assert.ok(tspans.length >= 2, "edge label split into tspans: " + JSON.stringify(tspans));
+    assert.notEqual(tspans[0], tspans[1], "tspans sit on different baselines");
+
+    // regenerating the text (toggle annotated) still keeps \n, with spaces around it
+    await toggle(page);
+    const ann = await text(page);
+    assert.ok(ann.includes('"блок \\n первый"'), "annotated code keeps the node \\n: " + JSON.stringify(ann));
+    assert.ok(ann.includes('a -> b {label: "связь \\n первая"}'), "annotated code keeps the edge \\n: " + JSON.stringify(ann));
+    assert.ok(ann.includes('block3: {label: "блок \\n третий"}'), "spaces added around a bare \\n: " + JSON.stringify(ann));
+    assert.ok(!ann.includes("|-md"), "annotated code has no block strings: " + JSON.stringify(ann));
+  } finally {
+    await browser.close();
+  }
+});
+
+test("UI E2E: \\n typed in the rename modals means a newline, not a literal backslash-n", { timeout: 90000 }, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: EXE, headless: "new", args: ["--no-sandbox"] });
+  try {
+    const page = await freshPage(browser);
+
+    const nodeBox = await page.$eval("#nodes .node", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(nodeBox.x, nodeBox.y, { clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 60));
+    await page.mouse.click(nodeBox.x, nodeBox.y, { clickCount: 2 });
+    await page.waitForSelector("#modal-overlay", { visible: true, timeout: 3000 });
+    await page.$eval("#modal-input", (el, v) => { el.value = v; }, "API \\n Server");
+    await page.click("#modal-ok");
+    await new Promise((r) => setTimeout(r, 1400));
+
+    let txt = await text(page);
+    assert.ok(txt.includes("API \\n Server"), "node \\n stays a single escape in code: " + JSON.stringify(txt));
+    assert.ok(!txt.includes("API \\\\n Server"), "no double backslash for a node: " + JSON.stringify(txt));
+    const nodeBreaks = await page.$$eval("#nodes .node .nlabel", (els) => els.map((e) => e.textContent.indexOf("\n") >= 0));
+    assert.ok(nodeBreaks.filter(Boolean).length >= 1, "node label renders a line break: " + JSON.stringify(nodeBreaks));
+
+    const edgeBox = await page.$eval("#edges .edge-hit", (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(edgeBox.x, edgeBox.y, { clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 80));
+    await page.mouse.click(edgeBox.x, edgeBox.y, { clickCount: 2 });
+    await page.waitForSelector("#modal-overlay", { visible: true, timeout: 3000 });
+    await page.$eval("#modal-input", (el, v) => { el.value = v; }, "связь \\n первая");
+    await page.click("#modal-ok");
+    await new Promise((r) => setTimeout(r, 1400));
+
+    txt = await text(page);
+    assert.ok(txt.includes("связь \\n первая"), "edge \\n stays a single escape in code: " + JSON.stringify(txt));
+    assert.ok(!txt.includes("связь \\\\n первая"), "no double backslash for an edge: " + JSON.stringify(txt));
+    const edgeTspans = await page.$$eval("#edges .elabel tspan", (els) => els.map((e) => e.getAttribute("y")));
+    assert.ok(edgeTspans.length >= 2, "edge label split into tspans: " + JSON.stringify(edgeTspans));
+    assert.notEqual(edgeTspans[0], edgeTspans[1], "tspans sit on different baselines");
+  } finally {
+    await browser.close();
+  }
+});

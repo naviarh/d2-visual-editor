@@ -59,7 +59,7 @@
   .nshape-path { fill: #ffffff; stroke: #7a8699; stroke-width: 2; }
   .node.selected .nshape-path { stroke: #2f6fed; }
   .node.src .nshape-path { stroke: #2f9e44; }
-  .nlabel { font-size: 18px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; z-index: 1; }
+  .nlabel { font-size: 18px; font-weight: 600; text-align: center; padding: 6px; word-break: break-word; white-space: pre-line; z-index: 1; }
   .nlabel.bottom { position: absolute; left: 0; right: 0; bottom: 4px; font-size: 14px; font-weight: 600; padding: 2px 6px; }
   #split { flex: 1; display: flex; min-height: 0; }
   #code-panel { width: 33.333%; min-width: 200px; display: flex; flex-direction: column; border-right: 1px solid #dfe2e8; }
@@ -578,6 +578,15 @@ function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Multi-line SVG text: one <tspan> per line, block vertically centered on y.
+function tspanLines(x, startY, lineH, lines) {
+  let s = "";
+  for (let i = 0; i < lines.length; i++) {
+    s += '<tspan x="' + x + '" y="' + (startY + i * lineH) + '">' + esc(lines[i]) + '</tspan>';
+  }
+  return s;
+}
+
 // Shape-aware edge anchoring: source/target points land on the node's shape
 // contour (outline intersection), falling back to the axis-aligned box border
 // for containers and as a safety net.
@@ -712,7 +721,14 @@ function renderEdges() {
       + '<path d="' + path + '" class="edge-hit"></path>'
       + '<path d="' + path + '" class="edge"' + edgeMarkers(ed) + '></path>';
     if (ed.label) {
-      inner += '<text x="' + lx + '" y="' + ly + '" text-anchor="middle" dominant-baseline="middle" class="elabel">' + esc(ed.label) + '</text>';
+      const text = String(ed.label);
+      if (text.indexOf("\n") === -1) {
+        inner += '<text x="' + lx + '" y="' + ly + '" text-anchor="middle" dominant-baseline="middle" class="elabel">' + esc(text) + '</text>';
+      } else {
+        const lines = text.split("\n");
+        inner += '<text text-anchor="middle" dominant-baseline="middle" class="elabel">'
+          + tspanLines(lx, ly - ((lines.length - 1) * 18) / 2, 18, lines) + '</text>';
+      }
     }
     inner += '</g>';
   }
@@ -855,7 +871,7 @@ async function handleNodeClick(n) {
     edgeSrc = null;
     // Every creation is a new connection (d2: "repeated connections declare
     // new ones"); the chosen direction becomes the new edge's direction.
-    const label = (await openEditDialog({ title: "Подпись стрелки (необязательно):", value: "" }) || "").trim();
+    const label = D2P.decodeEscapes((await openEditDialog({ title: "Подпись стрелки (необязательно):", value: "" }) || "").trim());
     const id = "e" + (idCounter++);
     const edge = { id, source: src, target: n.id, label };
     const dir = dirSel.value;
@@ -932,10 +948,11 @@ function openEditDialog(opts) {
 }
 
 async function renameNode(n) {
-  const raw = (await openEditDialog({ title: "Новое название блока:", value: n.label }) || "").trim();
-  if (!raw) return;
-  let id = raw, i = 2;
-  while (id !== n.id && nodes.has(id)) id = raw + "-" + (i++);
+  const raw = (await openEditDialog({ title: "Новое название блока:", value: D2S.d2Escape(n.label || "") }) || "").trim();
+  const name = D2P.decodeEscapes(raw);
+  if (!name) return;
+  let id = name, i = 2;
+  while (id !== n.id && nodes.has(id)) id = name + "-" + (i++);
   if (id !== n.id) {
     const oldId = n.id;
     nodes.delete(oldId);
@@ -955,7 +972,7 @@ async function renameNode(n) {
     if (groupParent === oldId) groupParent = id;
   }
   n.id = id;
-  n.label = raw;
+  n.label = name;
   nodes.set(id, n);
   render();
 }
@@ -963,9 +980,10 @@ async function renameNode(n) {
 async function renameEdge(id) {
   const ed = edges.find((e) => e.id === id);
   if (!ed) return;
-  const raw = (await openEditDialog({ title: "Подпись стрелки:", value: ed.label || "" }) || "").trim();
-  if (raw === ed.label) return;
-  ed.label = raw;
+  const raw = (await openEditDialog({ title: "Подпись стрелки:", value: ed.label ? D2S.d2Escape(ed.label) : "" }) || "").trim();
+  const label = D2P.decodeEscapes(raw);
+  if (label === ed.label) return;
+  ed.label = label;
   render();
 }
 
@@ -1010,7 +1028,7 @@ function centerFlow() {
 }
 
 async function addBlock() {
-  const label = (await openEditDialog({ title: "Название блока:", value: "" }) || "").trim() || ("Блок " + (idCounter++));
+  const label = D2P.decodeEscapes((await openEditDialog({ title: "Название блока:", value: "" }) || "").trim()) || ("Блок " + (idCounter++));
   let id = label, i = 2;
   while (nodes.has(id)) id = label + "-" + (i++);
   const c = centerFlow();
@@ -1279,30 +1297,32 @@ function svgFontMetrics(font) {
 function wrapLabel(text, maxWidth, font) {
   const ctx = svgTextCtx();
   ctx.font = font;
-  const words = String(text).split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [""];
   const fits = (t) => ctx.measureText(t).width <= maxWidth;
-  const lines = [];
-  let cur = "";
-  for (const w of words) {
-    const cand = cur ? cur + " " + w : w;
-    if (fits(cand)) { cur = cand; continue; }
-    if (cur) lines.push(cur);
-    cur = "";
-    if (fits(w)) { cur = w; continue; }
-    let rem = w;
-    while (rem.length) {
-      let lo = 1, hi = rem.length;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (fits(rem.slice(0, mid))) lo = mid; else hi = mid - 1;
+  const out = [];
+  const hardLines = String(text).split("\n");
+  for (const hard of hardLines) {
+    const words = hard.split(/\s+/).filter(Boolean);
+    if (words.length === 0) { out.push(""); continue; }
+    let cur = "";
+    for (const w of words) {
+      const cand = cur ? cur + " " + w : w;
+      if (fits(cand)) { cur = cand; continue; }
+      if (cur) { out.push(cur); cur = ""; }
+      if (fits(w)) { cur = w; continue; }
+      let rem = w;
+      while (rem.length) {
+        let lo = 1, hi = rem.length;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (fits(rem.slice(0, mid))) lo = mid; else hi = mid - 1;
+        }
+        out.push(rem.slice(0, lo));
+        rem = rem.slice(lo);
       }
-      lines.push(rem.slice(0, lo));
-      rem = rem.slice(lo);
     }
+    if (cur) out.push(cur);
   }
-  if (cur) lines.push(cur);
-  return lines;
+  return out;
 }
 
 function buildSVG() {
@@ -1355,14 +1375,15 @@ function buildSVG() {
   }
   // layer 3: edges with labels
   for (const it of edgeList) {
-    const t = it.ed.label != null ? esc(it.ed.label) : "";
     body += '<path d="' + it.path + '" fill="none" stroke="#8a93a6" stroke-width="2"' + edgeMarkers(it.ed) + '/>';
-    if (t) {
+    if (it.ed.label != null) {
       const m = svgFontMetrics("15px " + SVG_FONT);
       const y = it.ly + (m.ascent - m.descent) / 2;
-      const attrs = 'x="' + it.lx + '" y="' + y + '" text-anchor="middle" font-family="' + SVG_FONT + '" font-size="15"';
-      body += '<text ' + attrs + ' fill="#ffffff" stroke="#ffffff" stroke-width="3" stroke-linejoin="round">' + t + '</text>';
-      body += '<text ' + attrs + ' fill="#1f2430">' + t + '</text>';
+      const lines = String(it.ed.label).split("\n");
+      const inner = tspanLines(it.lx, y - ((lines.length - 1) * 18) / 2, 18, lines);
+      const attrs = 'text-anchor="middle" font-family="' + SVG_FONT + '" font-size="15"';
+      body += '<text x="' + it.lx + '" y="' + y + '" ' + attrs + ' fill="#ffffff" stroke="#ffffff" stroke-width="3" stroke-linejoin="round">' + inner + '</text>';
+      body += '<text x="' + it.lx + '" y="' + y + '" ' + attrs + ' fill="#1f2430">' + inner + '</text>';
     }
   }
   // layer 4: node labels (always above edges)
