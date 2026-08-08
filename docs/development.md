@@ -111,7 +111,7 @@ const { parseD2 } = require("../js/d2-parse.js");
 
 ## 6. Порядок работы
 
-1. Прочитать `docs/architecture.md` и `docs/plans/d2-editor-sync.md`.
+1. Прочитать `docs/architecture.md`, `docs/plans/d2-editor-sync.md` и опорные справочники возможностей D2: `docs/plans/d2-language-coverage.md`, `docs/plans/d2-visualization-coverage.md` (статусы ✅/⚠️/❌, приоритеты — §0 `AGENTS.md`).
 2. Менять логику в `js/*.js` (чистые функции) + тесты рядом; UI — только обвязка в `index.html`.
 3. После изменений: `npm test`; если трогали UI-поток — `npm run test:ui`.
 4. Ветки: работа на `feature/*`, интеграция — в `main`. Коммиты/слияния — только по явной просьбе пользователя.
