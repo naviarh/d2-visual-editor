@@ -62,6 +62,8 @@ test("v1 -> v2 migration: legacy localStorage opens with built order", { timeout
     await page.waitForSelector("#out");
     await new Promise((r) => setTimeout(r, 300));
 
+    // positions are hidden by default; toggle to annotated to verify markers
+    await toggle(page);
     const txt = await text(page);
     for (const s of ['Client # @d2pos 60,300', '"API Server": { # @d2pos 340,230', 'Database # @d2pos 40,60',
       'Cache # @d2pos 40,170', 'Worker # @d2pos 340,520', 'HTTPS']) {
@@ -90,33 +92,36 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
   try {
     const page = await freshPage(browser);
 
+    // positions hidden by default
     const initial = await text(page);
-    assert.ok(initial.includes("@d2pos"), "annotated view has markers");
-    assert.ok(initial.includes('"API Server"'), "demo serialized");
+    assert.ok(!initial.includes("@d2pos"), "clean view by default");
+    assert.ok(initial.includes('"Группа 1"'), "demo serialized");
 
-    // toggle in a clean state switches to clean view
+    // toggle in a clean state switches to annotated view
     await toggle(page);
-    const cleanView = await text(page);
-    assert.ok(!cleanView.includes("@d2pos"), "clean view has no markers");
-    assert.equal(await page.$eval("#btnPos", (el) => el.textContent), "Показать позиции");
-    await toggle(page); // back to annotated
-    assert.ok((await text(page)).includes("@d2pos"), "back to annotated");
+    const annotatedView = await text(page);
+    assert.ok(annotatedView.includes("@d2pos"), "annotated view has markers");
+    assert.equal(await page.$eval("#btnPos", (el) => el.textContent), "Скрыть позиции");
+    await toggle(page); // back to clean
+    assert.ok(!(await text(page)).includes("@d2pos"), "back to clean");
+    await toggle(page); // and to annotated for the marker-based edit below
 
     // rename on an annotated line -> merge keeps position, text not clobbered
     const renamed = (await text(page))
-      .replace('Client # @d2pos 80,492', 'WebClient # @d2pos 80,492')
-      .replace('Client -> "API Server"', 'WebClient -> "API Server"');
+      .replace('789 # @d2pos 438,173', '789x # @d2pos 438,173')
+      .replace('"Группа 1"."подгруппа 1".456 -> "Группа 1"."подгруппа 1".789',
+               '"Группа 1"."подгруппа 1".456 -> "Группа 1"."подгруппа 1".789x');
     await setText(page, renamed);
     await waitEdit();
     const afterRename = await text(page);
-    assert.ok(afterRename.includes("WebClient # @d2pos 80,492"), "rename kept marker");
-    assert.ok(afterRename.includes('WebClient -> "API Server"'), "edge reference renamed");
-    assert.ok(afterRename.includes("@d2pos 80,492"), "position preserved");
+    assert.ok(afterRename.includes("789x # @d2pos 438,173"), "rename kept marker");
+    assert.ok(afterRename.includes('"подгруппа 1".456 -> "Группа 1"."подгруппа 1".789x'), "edge reference renamed");
+    assert.ok(afterRename.includes("@d2pos 438,173"), "position preserved");
     assert.equal(await page.$eval("#outStatus", (el) => el.textContent), "Синхронизировано");
 
     // insert a new block -> auto-position, order at end, status message
-    const inserted = afterRename.replace("Database # @d2pos 40,60",
-      "Database # @d2pos 40,60\nNewBlock # @d2pos 5,5");
+    const inserted = afterRename.replace('5 -> "Группа 1"."123-2"',
+      '5 -> "Группа 1"."123-2"\nNewBlock # @d2pos 5,5');
     await setText(page, inserted);
     await waitEdit();
     const afterInsert = await text(page);
@@ -127,7 +132,7 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
     assert.ok(nodeLabels.includes("NewBlock"), "NewBlock rendered in diagram");
 
     // syntax error -> graph untouched, status shows error line
-    const bad = (await text(page)).replace('"API Server" -> Worker', '"API Server" ->');
+    const bad = (await text(page)).replace('"Группа 1"."123-2" -- "Группа 1"."новый блок"', '"Группа 1"."123-2" --');
     await setText(page, bad);
     await waitEdit();
     const errStatus = await page.$eval("#outStatus", (el) => el.textContent);
@@ -141,20 +146,21 @@ test("UI E2E: load, toggle, edit, auto-position, error", { timeout: 120000 }, as
     assert.ok(stillAnnotated.includes("@d2pos"), "unmerged text not rewritten by toggle");
 
     // fix the error, edit synchronizes again
-    const good = stillAnnotated.replace('"API Server" ->', '"API Server" -> Worker');
+    const good = stillAnnotated.replace('"Группа 1"."123-2" --', '"Группа 1"."123-2" -- "Группа 1"."новый блок"');
     await setText(page, good);
     await waitEdit();
     assert.equal(await page.$eval("#outStatus", (el) => el.textContent), "Синхронизировано");
 
-    // sort by arrows: chain order stable, positions untouched, status synced
+    // sort by arrows: chain order stable, positions untouched, status synced.
+    // showComments was toggled off during the error cycle, so the text is clean here.
     await page.click("#btnSort");
     await new Promise((r) => setTimeout(r, 300));
     const sorted = await text(page);
-    const iClient = sorted.indexOf("Client");
-    const iWorker = sorted.indexOf("Worker");
-    const iDb = sorted.indexOf("Database");
-    assert.ok(iClient >= 0 && iWorker >= 0 && iDb >= 0, "all blocks present after sort");
-    assert.ok(iClient < iWorker, "Client before Worker after sort");
+    const iG1 = sorted.indexOf('"Группа 1"');
+    const iSub = sorted.indexOf('"подгруппа 1"');
+    const i456 = sorted.indexOf("456");
+    assert.ok(iG1 >= 0 && iSub >= 0 && i456 >= 0, "all blocks present after sort");
+    assert.ok(iG1 < iSub, "container before its children after sort");
     assert.equal(await page.$eval("#outStatus", (el) => el.textContent), "Синхронизировано");
     const nodePos = await page.$$eval("#nodes .node", (els) => els.map((e) => {
       const st = e.getAttribute("style") || "";
@@ -606,21 +612,21 @@ test("moving an edge line inside its container does not freeze the page (no dupl
     await page.reload();
     await page.waitForSelector("#out");
 
-    const scenario = '"Группа 1": { # @d2pos 300,100\n'
-      + '  "подгруппа 1": { # @d2pos 30,30\n'
-      + '    456 # @d2pos 20,20\n'
+    const scenario = '"Корень": { # @d2pos 300,100\n'
+      + '  "ветка": { # @d2pos 30,30\n'
+      + '    111 # @d2pos 20,20\n'
       + '  }\n'
-      + '  789 # @d2pos 20,110\n'
+      + '  222 # @d2pos 20,110\n'
       + '}\n'
       + '\n'
-      + '"Группа 1".789 -> "Группа 1"."подгруппа 1".456\n';
+      + '"Корень".222 -> "Корень"."ветка".111\n';
     await setText(page, scenario);
     await waitEdit();
     assert.ok(/Новых блоков/.test(await page.$eval("#outStatus", (el) => el.textContent)), "scenario applied");
 
-    // move the edge line inside the "Группа 1" block scope
+    // move the edge line inside the "Корень" block scope
     const live = await text(page);
-    const edge = '"Группа 1".789 -> "Группа 1"."подгруппа 1".456';
+    const edge = '"Корень".222 -> "Корень"."ветка".111';
     const moved = live.replace("\n}\n\n" + edge, "\n  " + edge + "\n}");
     assert.notEqual(moved, live, "edge moved inside the container");
     await setText(page, moved);
@@ -634,7 +640,7 @@ test("moving an edge line inside its container does not freeze the page (no dupl
     assert.equal(nodeCount, 4, "still the 4 original nodes, no duplicates rendered");
 
     const finalText = await text(page);
-    assert.equal((finalText.match(/"Группа 1": \{/g) || []).length, 1, "container declared once, no nested duplicate");
+    assert.equal((finalText.match(/"Корень": \{/g) || []).length, 1, "container declared once, no nested duplicate");
     assert.ok(finalText.includes("  " + edge), "edge stays inside the container scope");
   } finally {
     await browser.close();
