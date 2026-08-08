@@ -545,7 +545,7 @@ test("shape with no label / unknown name: emitted, never duplicated with legacy 
     idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
   };
   const out = serializeClean(g);
-  assert.equal(out, "a: {\n  shape: cylinder\n  tooltip: t\n}\nb: {\n  shape: foo bar\n}");
+  assert.equal(out, "a: {\n  shape: cylinder\n  tooltip: t\n}\nb: {shape: foo bar}");
   const r = parseD2(out);
   assert.ok(r.ok, JSON.stringify(r.error));
   assert.equal(r.graph.nodes[0].shape, "cylinder");
@@ -563,11 +563,84 @@ test("valueArray node with shape emits two merged declarations (d2 form)", () =>
     headerComments: [], trailingComments: [],
     idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
   };
-  assert.equal(serializeClean(g), "x: [a]\nx: {\n  shape: diamond\n}");
+  assert.equal(serializeClean(g), "x: [a]\nx: {shape: diamond}");
   const r = parseD2(serializeClean(g));
   assert.ok(r.ok, JSON.stringify(r.error));
   const x = r.graph.nodes.find((n) => n.id === "x");
   assert.equal(x.valueArray, "[a]");
   assert.equal(x.shape, "diamond");
   assert.equal(serializeClean(r.graph), serializeClean(g), "stable under re-serialize");
+});
+
+test("single-attribute blocks: one line by default, form kept from refText", () => {
+  const node = (over) => Object.assign({
+    id: "x", label: "x", shape: "oval", x: 0, y: 0, w: 150, h: 70, parentId: null,
+    children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true
+  }, over);
+  const graph = (nodes, order) => ({
+    v: 2, nodes, edges: [], order,
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  });
+
+  // No refText: a single simple attribute collapses to one line.
+  assert.equal(serializeClean(graph([node({})], ["x"])), "x: {shape: oval}");
+  assert.equal(
+    serializeAnnotated(graph([node({})], ["x"])),
+    "x: {shape: oval} # --- @d2pos 0,0"
+  );
+
+  // refText written on one line -> kept on one line.
+  assert.equal(
+    serializeClean(graph([node({})], ["x"]), { refText: "x: {shape: oval}\n" }),
+    "x: {shape: oval}"
+  );
+
+  // refText written across three lines -> kept across three lines.
+  assert.equal(
+    serializeClean(graph([node({})], ["x"]), { refText: "x: {\n  shape: oval\n}\n" }),
+    "x: {\n  shape: oval\n}"
+  );
+
+  // A node absent from refText (newly created) collapses like the default.
+  assert.equal(
+    serializeClean(graph([node({})], ["x"]), { refText: "a: {shape: diamond}\n" }),
+    "x: {shape: oval}"
+  );
+
+  // RefIds map (from D2P.inlineIds) drives the same decision.
+  assert.equal(
+    serializeClean(graph([node({})], ["x"]), { refIds: new Map([["x", false]]) }),
+    "x: {\n  shape: oval\n}"
+  );
+  assert.equal(
+    serializeClean(graph([node({})], ["x"]), { refIds: new Map([["x", true]]) }),
+    "x: {shape: oval}"
+  );
+
+  // Two attributes never collapse, regardless of refText.
+  assert.equal(
+    serializeClean(graph([node({ label: "X" })], ["x"]), { refText: "x: {shape: oval}\n" }),
+    "x: {\n  label: X\n  shape: oval\n}"
+  );
+
+  // A group (children) never collapses.
+  const k = { id: "k", label: "k", x: 0, y: 0, w: 150, h: 70, parentId: "x", children: [], comments: [], trailingComment: null, rawAttrs: [], hasPos: true };
+  assert.equal(
+    serializeClean(graph([node({ children: ["k"] }), k], ["x"]), { refText: "x: {shape: oval}\n" }),
+    "x: {\n  shape: oval\n  k\n}"
+  );
+
+  // A single-attribute rawAttr block keeps its form too.
+  const rawNode = node({ shape: undefined, rawAttrs: ["tooltip: t"] });
+  assert.equal(
+    serializeClean(graph([rawNode], ["x"]), { refText: "x: {\n  tooltip: t\n}\n" }),
+    "x: {\n  tooltip: t\n}"
+  );
+  assert.equal(serializeClean(graph([rawNode], ["x"])), "x: {tooltip: t}");
+
+  // Parity holds with and without refText.
+  const opts = { refText: "x: {\n  shape: oval\n}\n" };
+  assert.equal(stripMarkers(serializeAnnotated(graph([node({})], ["x"]), opts)),
+    serializeClean(graph([node({})], ["x"]), opts));
 });

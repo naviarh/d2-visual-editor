@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { parseD2 } = require("../js/d2-parse.js");
+const { parseD2, inlineIds } = require("../js/d2-parse.js");
 const { serializeClean, serializeAnnotated, stripMarkers } = require("../js/d2-serialize.js");
 const exec = promisify(execFile);
 
@@ -880,6 +880,38 @@ test("# --- @d2pos marker (dashed form) parses like the legacy form", () => {
   assert.ok(bare.ok, JSON.stringify(bare.error));
   assert.equal(bare.graph.nodes[0].x, -5);
   assert.equal(bare.graph.nodes[0].trailingComment, null);
+});
+
+test("inlineIds: single-line blocks detected transiently, nothing leaks into the graph", () => {
+  const src = [
+    "a: {shape: oval} # --- @d2pos 1,2",
+    "b: {",
+    "  label: Hi",
+    "}",
+    'c: {tooltip: t} # note',
+    "d: {shape: oval # --- @d2pos 5,6",
+    "}",
+    "e: {",
+    "  shape: oval",
+    "}"
+  ].join("\n");
+  const ids = inlineIds(src);
+  assert.ok(ids instanceof Map, "returns a Map");
+  assert.equal(ids.get("a"), true, "single-line block");
+  assert.equal(ids.get("b"), false, "three-line block");
+  assert.equal(ids.get("c"), true, "single-line with inline comment");
+  assert.equal(ids.get("d"), false, "open/close on different lines");
+  assert.equal(ids.get("e"), false, "three-line block");
+  assert.equal(ids.has("x"), false, "no block -> not present");
+
+  const invalid = inlineIds("a: {\n");
+  assert.equal(invalid, null, "unparseable reference text -> null");
+
+  // The public parseD2 does not expose the transient form info.
+  const r = parseD2(src);
+  assert.ok(r.ok, JSON.stringify(r.error));
+  for (const n of r.graph.nodes) assert.equal(n.inline, undefined, "no inline field on nodes");
+  assert.deepEqual(Object.keys(r), ["ok", "graph"], "return shape unchanged");
 });
 
 test("d2 CLI: parsed round-trips (clean and annotated) compile to identical structure", async (t) => {

@@ -337,7 +337,10 @@ function syncOrder() {
 
 function regenerateTextView() {
   const g = currentGraph();
-  const text = showComments ? D2S.serializeAnnotated(g) : D2S.serializeClean(g);
+  const refText = document.getElementById("out").value || null;
+  const text = showComments
+    ? D2S.serializeAnnotated(g, { refText })
+    : D2S.serializeClean(g, { refText });
   lastGraphText = text;
   document.getElementById("out").value = text;
   document.getElementById("btnPos").textContent = showComments ? "Скрыть позиции" : "Показать позиции";

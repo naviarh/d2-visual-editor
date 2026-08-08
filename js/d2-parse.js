@@ -363,7 +363,7 @@
     return { tokens: tokens };
   }
 
-  function parseD2(src) {
+  function parseD2(src, opts) {
     var tok = tokenize(src);
     if (tok.error) return { ok: false, error: tok.error };
     var tokens = tok.tokens;
@@ -380,6 +380,10 @@
     var scopeStack = [null];
     var pending = [[]];
     var sawTopLevel = false;
+    // For every node whose body is a `{ … }` block: id -> inline (block opened
+    // and closed on the same line). Transient: only returned on request, never
+    // written into the graph nodes.
+    var blockForms = new Map();
 
     function ParseError(message, line, col) {
       this.message = message;
@@ -812,9 +816,9 @@
           return;
         }
         if (peekIs("{")) {
-          next();
+          var openTok = next();
           var node = declareNode(pathTokens);
-          parseBlock(node);
+          parseBlock(node, openTok.line);
           attachInlineNode(node);
           return;
         }
@@ -834,8 +838,8 @@
         // (valid in D2 only when `{` is on the same line).
         if (peekIs("{") && peek().line === lastLine) {
           if (v && v.type === "array") { errorAt(peek(), "массив не может иметь тело '{}'"); }
-          next();
-          parseBlock(cn);
+          var openTok2 = next();
+          parseBlock(cn, openTok2.line);
           attachInlineNode(cn);
           return;
         }
@@ -843,9 +847,9 @@
         return;
       }
       if (t && t.type === "punct" && t.value === "{") {
-        next();
+        var openTok3 = next();
         var bnode = declareNode(pathTokens);
-        parseBlock(bnode);
+        parseBlock(bnode, openTok3.line);
         attachInlineNode(bnode);
         return;
       }
@@ -899,14 +903,18 @@
       return true;
     }
 
-    function parseBlock(container) {
+    function parseBlock(container, openLine) {
       scopeStack.push(container);
       pending.push([]);
       while (true) {
         skipNl();
         var t = peek();
         if (!t) { errorAt(null, "незакрытый блок: ожидается '}' (в '" + container.id + "')"); }
-        if (t.type === "punct" && t.value === "}") { next(); break; }
+        if (t.type === "punct" && t.value === "}") {
+          blockForms.set(container.id, openLine === t.line);
+          next();
+          break;
+        }
         parseStatement();
       }
       var leftover = pending.pop();
@@ -934,7 +942,21 @@
       if (e instanceof ParseError) return { ok: false, error: { line: e.line, col: e.col, message: e.message } };
       throw e;
     }
+    if (opts && opts.inline) return { ok: true, graph: graph, blockForms: blockForms };
     return { ok: true, graph: graph };
+  }
+
+  /**
+   * `inlineIds(text)` parses the text and returns a Map of node id -> boolean,
+   * true when the node's `{ … }` body was written on a single line. Used by the
+   * serializer (via refText) to keep the user's one-line/three-line form for
+   * single-attribute blocks. The map is transient — nothing is written into the
+   * returned graph.
+   */
+  function inlineIds(text) {
+    var r = parseD2(text, { inline: true });
+    if (!r.ok) return null;
+    return r.blockForms || new Map();
   }
 
   var api = {
@@ -942,7 +964,8 @@
     POS_INNER_RE: POS_INNER_RE,
     RESERVED: RESERVED,
     tokenize: tokenize,
-    parseD2: parseD2
+    parseD2: parseD2,
+    inlineIds: inlineIds
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

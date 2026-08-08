@@ -147,9 +147,35 @@
     return lines.length - 1;
   }
 
+  // Resolve the reference-text form map (node id -> inline block?) from a
+  // refText option. `inlineIds` lives in d2-parse (transient parse, no graph
+  // changes); it is required lazily to keep this module standalone for callers
+  // that pass a prebuilt `refIds` map instead.
+  function resolveRefIds(refText) {
+    var parseApi = null;
+    if (typeof module !== "undefined" && module.exports) {
+      parseApi = require("./d2-parse.js");
+    } else if (global.d2parse) {
+      parseApi = global.d2parse;
+    }
+    if (!parseApi || !parseApi.inlineIds) return null;
+    return parseApi.inlineIds(refText);
+  }
+
+  // A single-attribute block keeps the user's form: one line when written on
+  // one line, three lines when written as three. Without a reference text (e.g.
+  // after a reload) single-attribute blocks collapse to one line.
+  function nodeInline(n, refIds) {
+    if (!refIds) return true;
+    return refIds.has(n.id) ? !!refIds.get(n.id) : true;
+  }
+
   function serialize(graph, options) {
     options = options || {};
     var annotated = !!options.annotated;
+    var refIds = null;
+    if (options.refIds) refIds = options.refIds;
+    else if (options.refText) refIds = resolveRefIds(options.refText);
     var byId = indexNodes(graph);
     var byEdge = indexEdges(graph);
     var order = Array.isArray(graph.order) && graph.order.length
@@ -178,7 +204,7 @@
         visiting.delete(n.id);
         return true;
       }
-      emitNode(n, depth, byId, lines, annotated);
+      emitNode(n, depth, byId, lines, annotated, refIds);
       markTree(n);
       return true;
     }
@@ -218,7 +244,7 @@
     return parts.length ? " " + parts.join(" ") : "";
   }
 
-  function emitNode(n, depth, byId, lines, annotated) {
+  function emitNode(n, depth, byId, lines, annotated, refIds) {
     var ind = "  ".repeat(depth);
     for (var c = 0; c < (n.comments || []).length; c++) {
       pushComment(lines, ind, n.comments[c]);
@@ -245,41 +271,59 @@
     }
     var blockLabel = !!lb;
     plainLabel = plainLabel && !blockLabel;
+
+    // Emit a `{ … }` body. A single simple attribute becomes one line when the
+    // reference text says the block is inline (or by default, when there is no
+    // reference text — e.g. after a reload); otherwise the block is emitted
+    // across lines, preserving the user's three-line form.
+    function emitBlock(kids, raw, hasShape, hasLabel) {
+      var param = singleParam(kids, raw, hasShape, hasLabel);
+      if (param !== null && nodeInline(n, refIds)) {
+        lines.push(ind + key + ": {" + param + "}" + lineSuffix(n, annotated));
+        return;
+      }
+      var open = ind + key + ": {" + lineSuffix(n, annotated);
+      lines.push(open);
+      if (blockLabel) emitBlockString(lines, ind + "  label: ", lb);
+      else if (hasLabel) lines.push(ind + "  label: " + d2Value(n.label));
+      if (hasShape) lines.push(ind + "  shape: " + d2Value(n.shape));
+      for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
+      for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated, refIds);
+      lines.push(ind + "}");
+    }
+
+    // The single attribute that would go into a one-line block, or null when
+    // the node has several attributes, children, a block-string label or a
+    // multi-line raw attribute (none of which fit on one line).
+    function singleParam(kids, raw, hasShape, hasLabel) {
+      if (kids.length || blockLabel) return null;
+      var count = (hasLabel ? 1 : 0) + (hasShape ? 1 : 0) + raw.length;
+      if (count !== 1) return null;
+      var s = hasLabel ? "label: " + d2Value(n.label)
+        : hasShape ? "shape: " + d2Value(n.shape)
+        : String(raw[0]);
+      if (s.indexOf("\n") !== -1) return null;
+      return s;
+    }
+
     if (n.valueArray) {
       // An attribute-array value: `key: [a, b]` (never a label in D2). d2 has
       // no single-line form for array + attrs, so a shape/raw/kids payload is
       // emitted as a second merged declaration (d2 merges by path).
       lines.push(ind + key + ": " + n.valueArray + lineSuffix(n, annotated));
       if (kids.length || raw.length || hasShape) {
-        lines.push(ind + key + ": {" + lineSuffix(n, annotated));
-        if (hasShape) lines.push(ind + "  shape: " + d2Value(n.shape));
-        for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
-        for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
-        lines.push(ind + "}");
+        emitBlock(kids, raw, hasShape, false);
       }
       return;
     }
-    if (kids.length || raw.length || hasShape) {
-      var open = ind + key + ": {" + lineSuffix(n, annotated);
-      lines.push(open);
-      if (blockLabel) emitBlockString(lines, ind + "  label: ", lb);
-      else if (plainLabel) lines.push(ind + "  label: " + d2Value(n.label));
-      if (hasShape) lines.push(ind + "  shape: " + d2Value(n.shape));
-      for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
-      for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated);
-      lines.push(ind + "}");
-      return;
-    }
-    if (blockLabel) {
+    if (blockLabel && !hasShape && !raw.length && !kids.length) {
       // Node's own value is a block string: emit `key: |quote tag … |`.
       var bi = emitBlockString(lines, ind + key + ": ", lb);
       lines[bi] += lineSuffix(n, annotated);
       return;
     }
-    if (plainLabel) {
-      lines.push(ind + key + ": {" + lineSuffix(n, annotated));
-      lines.push(ind + "  label: " + d2Value(n.label));
-      lines.push(ind + "}");
+    if (kids.length || raw.length || hasShape || plainLabel) {
+      emitBlock(kids, raw, hasShape, plainLabel);
       return;
     }
     lines.push(ind + key + lineSuffix(n, annotated));
@@ -336,12 +380,16 @@
     lines.push(line);
   }
 
-  function serializeClean(graph) {
-    return serialize(graph, { annotated: false });
+  function serializeClean(graph, options) {
+    options = options || {};
+    options.annotated = false;
+    return serialize(graph, options);
   }
 
-  function serializeAnnotated(graph) {
-    return serialize(graph, { annotated: true });
+  function serializeAnnotated(graph, options) {
+    options = options || {};
+    options.annotated = true;
+    return serialize(graph, options);
   }
 
   function stripMarkers(text) {
