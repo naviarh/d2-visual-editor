@@ -146,3 +146,31 @@ test("§8 parity table: our parser agrees with d2 validate (verdict and error li
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("toStandardD2 output passes d2 validate even when the source is annotated", async (t) => {
+  try {
+    await exec("d2", ["--version"]);
+  } catch {
+    t.skip("d2 CLI not available");
+    return;
+  }
+  const { toStandardD2, serializeAnnotated } = require("../js/d2-serialize.js");
+  const dir = await mkdtemp(join(tmpdir(), "d2parity-std-"));
+  try {
+    const src = '"Клиент" # --- @d2pos 60,300\n"Сервер": {\n  "База" # --- @d2pos 40,60\n}\n"Клиент" -> "Сервер" {label: запрос}\n';
+    const r = parseD2(src);
+    assert.ok(r.ok, "annotated source parses");
+    const std = toStandardD2(r.graph, src);
+    assert.ok(!std.includes("@d2pos"), "standard form has no markers");
+    const file = join(dir, "std.d2");
+    await writeFile(file, std + "\n");
+    assert.equal((await cliValidate(file)).ok, true, "d2 validate accepts toStandardD2 output");
+    // And the annotated source itself is also valid D2 (markers are comments).
+    const ann = serializeAnnotated(r.graph, { refText: src });
+    const file2 = join(dir, "ann.d2");
+    await writeFile(file2, ann + "\n");
+    assert.equal((await cliValidate(file2)).ok, true, "d2 validate accepts annotated form");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

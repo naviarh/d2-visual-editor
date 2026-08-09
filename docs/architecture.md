@@ -131,12 +131,35 @@ Drag, добавить блок, стрелка, группа, delete, rename �
 
 `queueSave` → `saveState` пишет `{v:1, nodes, edges, idCounter, viewport, order, showComments}` в `localStorage["d2editor:v1"]`. Загрузка: `loadState` → при отсутствии `order` строится `defaultOrder` (миграция v1 → v2). Сборка мусора: `syncOrder()` убирает id удалённых нод/рёбер и дописывает недостающие.
 
+**Персистентность графа в localStorage и его границы.** localStorage хранит текст как строку (не БД и не «файл»): нет списка, перезапись одним документом, риски переполнения ~5 МБ и очистки. Отсюда — файлы в браузере (см. ниже).
+
+### Модальные диалоги
+
+Единый каркас `showModal(opts)` → одна сессия `s` (повторный вызов закрывает предыдущую), один одиночный слой (`#modal-overlay`), DOM — `#modal-box` (ширина 500px, перетаскивается за `#modal-title`), `#modal-content`, `#modal-input`, кнопки `#modal-ok`/`#modal-cancel`. Сессия: `setTitle`, `setText` (основная строка в `#modal-content`), `setContent(el)` (подменяет контент), `setShowInput`, `setButtons`, `setBehavior`, `value`, `close`, `closed` (Promise).
+
+Опции: `behavior: { allowOverlayClose, allowEscapeClose, onEnter, onEscape }`, `inputValue`, `valueType` (`"text"`/`"num"`), `ok` — обработчик подтверждения, `cancel`. Возврат `s` после `ok`/`cancel` — через `resolve`. Escape срабатывает только в полях ввода (`Escape` в обычном поле игнорируется, чтобы не терять ввод — флаг `inField`); в обычных модалках Escape — Отмена.
+
+- **`openEditDialog`** (dblclick-rename блока): префилл — метка в D2-форме (`D2S.d2Escape`), сохранённое значение декодируется `D2P.decodeEscapes` — введённый `\n` значит перенос строки (не `\\n`). Применение: `render()` → `queueSave()` + `queueGen()`, новая метка — «последний шаг» через `D2HIST` (перед ним `applyGraph` текущего графа, чтобы история не «заряжала» изменения).
+- **`confirmDialog`** (предупреждения): заголовок, текст, кнопки OK/Отмена.
+- **`saveToBrowser`/`openFileListModal`** — см. «Файлы в браузере».
+
+### Файлы в браузере (IndexedDB)
+
+БД `d2editor` (`dbPromise`/`dbHandle`, store `files`, keyPath `name`, индекс `savedAt`). Хелперы: `dbFiles()` (упавшая БД → `Promise.reject`), `idbOp(db, mode, cb)` (обёртка над транзакцией, resolve/reject по событию, **не полагаться на `req.onsuccess` как функцию**), `fileList()` (записи `{name, savedAt, size}`, отсортированы по `savedAt`), `fileGet(name)`, `filePut(record)`, `fileDelete(name)`, `fileReset()` (удаление и пересоздание БД), `bytesText(n)` (русская склоняемая форма «N байт/КБ/МБ»).
+
+`saveToBrowser()` — модалка «Сохранить файл в браузере»: фаза «ввод имени» (префилл `currentFile` или `"diagram"`, Enter = Сохранить; пустое имя → инлайн «Введите имя диаграммы», ввод остаётся). Ниже поля имени — **список сохранённых файлов** (тот же вид, что в открытии, но строки без кнопки «Открыть»; «Удалить» работает и ведёт через inline-подтверждение). Если `fileList()` уже содержит имя → фаза «перезапись» («…уже существует.» + Заменить/Отмена, Отмена возвращает ввод с сохранённым значением). Сообщения фаз идут в `#save-hint`, список при этом остаётся на экране; `renderSaveList` после `setContent` возвращает видимость `#modal-input`. Транзакция — через `filePut`, статус «Сохранено: имя», `currentFile = name`, `updateFileLabel()`. Если база падает уже при открытии окна (загрузка списка) — сразу фаза «база недоступна».
+
+`openFileListModal()` — модалка «Файлы в браузере»: строки-кнопки `.file-row` (клик по телу — открыть, по «Удалить» — inline-подтверждение), строка хранилища (счётчик + объём; `navigator.storage.estimate()` с фолбэком `getSize()` — посчитать суммарный `size` записей). Открытие (`openStoredFile`): `fileGet` → `validateState` → `applyState` (граф, `lastGraphText`, позиции, viewport) → `D2HIST.clearHistory` → `updateUndoUI` → `saveState` → `currentFile` + `updateFileLabel` + статус «Открыт: имя».
+
+**База недоступна** (`handleIdbDown`/`retryIdbDown`): открытие любой модалки файлов при падении `dbFiles()` — `onerror` с «Пересоздать базу файлов» (сохраняет имя в `#save-modal-input`, инлайн-сообщение в окне). `fileReset()` + повтор попытки. Обходные защитные ветки (`idbNotAvailable`) — «…недоступен в этом браузере».
+
 ### Экспорт и импорт файлов
 
 Split-button «Копировать» (шеврон `#btnCopyMenu`) открывает меню `#copy-menu`:
 
-- **Экспорт D2** (`exportD2`): текущий текст textarea → нативный диалог `showSaveFilePicker` (фолбэк `Blob` + `a[download]`). Расширение `.d2` принудительное (`handle.move`), имя запоминается в `localStorage["d2editor:ui:v1"]` (`exportName`) и подставляется как `suggestedName` в следующий раз.
-- **Импорт D2** (`#import-file`, `.d2`/`.txt`): текст применяется через `applyCode` — без 3-секундного debounce, сразу `onTextEdit`.
+- **Экспорт D2** (`exportStandardD2`): `D2S.toStandardD2(currentGraph(), outEl.value)` — единая точка приведения к стандарту (чистый сериализатор без маркеров) → нативный диалог `showSaveFilePicker` (фолбэк `Blob` + `a[download]`). Общий для файловых экспортов `downloadCode(content, ext, base)`: принудительное расширение `ext` (регэксп `/\.[^./\\]+$/` + `handle.move`), `suggestedName` = `base + "." + ext`, фильтр `application/x-d2` → `[".d2"]`, фолбэк `downloadBlob(content, "text/plain;charset=utf-8", suggested)`.
+- **Экспорт файла** (`exportFile`/`exportDd2`): аннотированный `.dd2` — `D2S.serializeAnnotated(currentGraph(), {refText})`, расширение `.dd2`, имя из `exportName`.
+- **Импорт D2** (`#import-file`, `.d2`/`.txt`/`.dd2`, `accept=".d2,.txt,.dd2"`): текст применяется через `applyCode` — без 3-секундного debounce, сразу `onTextEdit`.
 - **Экспорт SVG** (`exportSVG`/`buildSVG`): самодостаточный векторный документ, генерируется прямо из графа (позиции `absPos`, размеры `boxSize`, рёбра `edgeGeometry` + `XYF.getSmoothStepPath`), без `foreignObject` и внешних ресурсов. Слои: фон контейнеров → фоны блоков → рёбра + подписи рёбер → подписи блоков (стрелки внутри групп не перекрываются заливкой).
 - **В плане**: `export-drawio` (mxGraphModel XML), `export-mermaid`/`import-mermaid` — пункты меню-стабы со статусом «… — в разработке».
 

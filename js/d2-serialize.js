@@ -378,6 +378,14 @@
     return serialize(graph, options);
   }
 
+  // Standard-D2 projection: same as serializeClean, kept as a single entry
+  // point for "flatten to spec D2" (future: normalizing `dir`, merging
+  // duplicate edges, etc.). refText is an optional source string used to
+  // preserve block forms from the text area.
+  function toStandardD2(graph, refText) {
+    return serializeClean(graph, { refText: refText || null });
+  }
+
   function serializeAnnotated(graph, options) {
     options = options || {};
     options.annotated = true;
@@ -400,6 +408,7 @@
     defaultOrder: defaultOrder,
     serializeClean: serializeClean,
     serializeAnnotated: serializeAnnotated,
+    toStandardD2: toStandardD2,
     stripMarkers: stripMarkers
   };
 

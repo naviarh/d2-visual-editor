@@ -319,7 +319,7 @@ test("UI E2E: copy split button menu — items, Escape and outside click close i
     await page.click("#btnCopyMenu");
     await page.waitForSelector("#copy-menu:not([hidden])", { visible: true, timeout: 3000 });
     const acts = await page.$$eval("#copy-menu button[data-act]", (els) => els.map((e) => e.dataset.act));
-    assert.deepEqual(acts, ["paste", "replace", "import", "export", "export-svg", "export-drawio", "export-mermaid", "import-mermaid"]);
+    assert.deepEqual(acts, ["paste", "replace", "open-browser", "save-browser", "import-file", "export-file", "export-d2", "export-svg", "export-drawio", "export-mermaid", "import-mermaid"]);
 
     // the format items are stubs for now — clicking reports "в разработке" and closes the menu
     await page.click('#copy-menu button[data-act="export-drawio"]');
@@ -390,7 +390,7 @@ test("UI E2E: import reads a .d2 file and replaces the code", { timeout: 60000 }
     await page.click("#btnCopyMenu");
     const [chooser] = await Promise.all([
       page.waitForFileChooser({ timeout: 5000 }),
-      page.click('#copy-menu button[data-act="import"]')
+      page.click('#copy-menu button[data-act="import-file"]')
     ]);
     await chooser.accept([file]);
     await new Promise((r) => setTimeout(r, 300));
@@ -425,7 +425,7 @@ test("UI E2E: export opens the native save dialog and writes the file", { timeou
 
     const before = await text(page);
     await page.click("#btnCopyMenu");
-    await page.click('#copy-menu button[data-act="export"]');
+    await page.click('#copy-menu button[data-act="export-d2"]');
     await new Promise((r) => setTimeout(r, 200));
 
     const ex = await page.evaluate(() => ({
@@ -467,7 +467,7 @@ test("UI E2E: export forces the .d2 extension and remembers the filename", { tim
     await stubPicker();
 
     await page.click("#btnCopyMenu");
-    await page.click('#copy-menu button[data-act="export"]');
+    await page.click('#copy-menu button[data-act="export-d2"]');
     await new Promise((r) => setTimeout(r, 200));
     const status = await page.$eval("#outStatus", (el) => el.textContent);
     assert.ok(/Экспортировано в myfile\.d2/.test(status), ".d2 enforced in status: " + status);
@@ -475,7 +475,7 @@ test("UI E2E: export forces the .d2 extension and remembers the filename", { tim
 
     // next export suggests the remembered name
     await page.click("#btnCopyMenu");
-    await page.click('#copy-menu button[data-act="export"]');
+    await page.click('#copy-menu button[data-act="export-d2"]');
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(await page.evaluate(() => window.__suggested), "myfile.d2", "remembered name suggested next time");
 
@@ -495,7 +495,7 @@ test("UI E2E: export forces the .d2 extension and remembers the filename", { tim
       };
     });
     await page2.click("#btnCopyMenu");
-    await page2.click('#copy-menu button[data-act="export"]');
+    await page2.click('#copy-menu button[data-act="export-d2"]');
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(await page2.evaluate(() => window.__suggested), "myfile.d2", "name restored from localStorage");
   } finally {
@@ -517,7 +517,7 @@ test("UI E2E: export falls back to a diagram.d2 download without the save picker
 
     const before = await text(page);
     await page.click("#btnCopyMenu");
-    await page.click('#copy-menu button[data-act="export"]');
+    await page.click('#copy-menu button[data-act="export-d2"]');
     await new Promise((r) => setTimeout(r, 200));
 
     const ex = await page.evaluate(async () => ({

@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const mod = require("../js/d2-serialize.js");
-const { d2Key, d2Value, d2Escape, serializeClean, serializeAnnotated, stripMarkers, defaultOrder, treeOrder, POS_RE } = mod;
+const { d2Key, d2Value, d2Escape, serializeClean, serializeAnnotated, stripMarkers, toStandardD2, defaultOrder, treeOrder, POS_RE } = mod;
 const { parseD2 } = require("../js/d2-parse.js");
 const exec = promisify(execFile);
 
@@ -669,4 +669,35 @@ test("single-attribute blocks: one line by default, form kept from refText", () 
   const opts = { refText: "x: {\n  shape: oval\n}\n" };
   assert.equal(stripMarkers(serializeAnnotated(graph([node({})], ["x"]), opts)),
     serializeClean(graph([node({})], ["x"]), opts));
+});
+
+test("toStandardD2: equals serializeClean, strips position markers, keeps block forms from refText", () => {
+  const graph = (over) => Object.assign({
+    v: 2,
+    nodes: [
+      { id: "a", label: "a", x: 60, y: 300, w: 150, h: 70, parentId: null, children: [],
+        comments: [], trailingComment: null, rawAttrs: [], hasPos: true },
+      { id: "b", label: "b", x: 40, y: 60, w: 150, h: 70, parentId: null, children: [],
+        comments: [], trailingComment: null, rawAttrs: [], hasPos: true }
+    ],
+    edges: [{ id: "e1", source: "a", target: "b", label: null, comments: [], trailingComment: null }],
+    order: ["a", "e1", "b"],
+    headerComments: [], trailingComments: [],
+    idCounter: 1, viewport: { x: 0, y: 0, zoom: 1 }, showComments: true
+  }, over);
+
+  const g = graph({});
+  const annotated = serializeAnnotated(g);
+  const ref = annotated + "\n";
+
+  // Same output as serializeClean with the same refText.
+  assert.equal(toStandardD2(g, ref), serializeClean(g, { refText: ref }));
+  // refText may be omitted entirely (null).
+  assert.equal(toStandardD2(g), serializeClean(g));
+  // Standard D2 carries no position markers, annotated input or not.
+  assert.ok(!toStandardD2(g, ref).includes("--- @d2pos"), "no d2pos markers");
+  assert.ok(!toStandardD2(g, ref).includes("# @d2pos"), "no legacy markers");
+  // Input text with markers round-trips to the same clean document.
+  assert.ok(annotated.includes("--- @d2pos"), "annotated source has markers");
+  assert.equal(toStandardD2(g, ref), serializeClean(g));
 });

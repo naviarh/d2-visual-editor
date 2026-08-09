@@ -105,7 +105,7 @@
   }
   #modal-overlay[hidden] { display: none; }
   #modal-box {
-    width: 340px; max-width: calc(100vw - 40px);
+    width: 500px; max-width: calc(100vw - 40px);
     background: #fff; border: 2px solid #7a8699; border-radius: 8px;
     box-shadow: 0 8px 30px rgba(15, 23, 42, 0.25); padding: 16px;
   }
@@ -118,6 +118,18 @@
   }
   #modal-input:focus { border-color: #2f6fed; box-shadow: 0 0 0 3px rgba(47,111,237,.2); }
   #modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  #modal-content { margin-bottom: 14px; font-size: 14px; color: #1f2430; user-select: text; }
+  #modal-content[hidden] { display: none; }
+  #files-list { max-height: 40vh; overflow-y: auto; margin-bottom: 10px; }
+  #save-hint { color: #b54708; font-size: 13px; margin-bottom: 6px; }
+  #save-hint:empty { display: none; }
+  .file-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px; border-bottom: 1px solid #eef0f3; }
+  .file-row:last-child { border-bottom: none; }
+  .file-row .file-info { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .file-row button { flex: 0 0 auto; padding: 4px 10px; }
+  #files-storage { color: #667085; font-size: 12px; margin-top: 8px; }
+  #fileLabel { color: #2f6fed; font-size: 12px; white-space: nowrap; }
+  #fileLabel[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -131,8 +143,12 @@
         <div id="copy-menu" role="menu" hidden>
           <button role="menuitem" data-act="paste">Вставить</button>
           <button role="menuitem" data-act="replace">Заменить</button>
-          <button role="menuitem" data-act="import">Импорт…</button>
-          <button role="menuitem" data-act="export">Экспорт…</button>
+          <div class="menu-sep"></div>
+          <button role="menuitem" data-act="open-browser">Открыть из браузера</button>
+          <button role="menuitem" data-act="save-browser">Сохранить в браузер</button>
+          <button role="menuitem" data-act="import-file">Импорт из файла (D2)</button>
+          <button role="menuitem" data-act="export-file">Экспорт в файл</button>
+          <button role="menuitem" data-act="export-d2">Экспорт в D2</button>
           <div class="menu-sep"></div>
           <button role="menuitem" data-act="export-svg">Экспорт в SVG</button>
           <button role="menuitem" data-act="export-drawio">Экспорт в Draw.io</button>
@@ -140,9 +156,9 @@
           <button role="menuitem" data-act="import-mermaid">Импорт из Mermaid</button>
         </div>
       </div>
-      <button id="btnPos">Скрыть позиции</button><span id="outStatus"></span>
+      <button id="btnPos">Скрыть позиции</button><span id="fileLabel" hidden></span><span id="outStatus"></span>
     </div>
-    <input type="file" id="import-file" accept=".d2,.txt,text/plain" hidden/>
+    <input type="file" id="import-file" accept=".d2,.txt,.dd2,text/plain" hidden/>
     <div id="editor-wrap">
       <div id="line-nums"></div>
       <textarea id="out" spellcheck="false" wrap="off"></textarea>
@@ -179,6 +195,7 @@
 <div id="modal-overlay" hidden>
   <div id="modal-box">
     <div id="modal-title"></div>
+    <div id="modal-content" hidden></div>
     <input id="modal-input" type="text" spellcheck="false"/>
     <div id="modal-actions">
       <button id="modal-cancel">Отмена</button>
@@ -214,8 +231,8 @@ const modalOverlay = document.getElementById("modal-overlay");
 const modalBox = document.getElementById("modal-box");
 const modalTitle = document.getElementById("modal-title");
 const modalInput = document.getElementById("modal-input");
-const modalOk = document.getElementById("modal-ok");
-const modalCancel = document.getElementById("modal-cancel");
+const modalContent = document.getElementById("modal-content");
+const modalActions = document.getElementById("modal-actions");
 const shapeSel = document.getElementById("shapeSel");
 const dirSel = document.getElementById("dirSel");
 const btnUndo = document.getElementById("btnUndo");
@@ -271,6 +288,7 @@ let order = [];
 let showComments = false;
 let lastGraphText = "";
 let exportName = null;
+let currentFile = null;   // имя файла в браузере (IndexedDB); null — файл не открыт/не сохранён
 
 const STORE_KEY = "d2editor:v1";
 const UI_KEY = "d2editor:ui:v1";
@@ -472,21 +490,54 @@ function queueSave() {
   saveTimer = setTimeout(saveState, 400);
 }
 
+function graphPayload() {
+  return {
+    v: 1,
+    nodes: [...nodes.values()].map((n) => ({ ...n, children: n.children.slice() })),
+    edges: edges.map((e) => ({ ...e })),
+    idCounter,
+    viewport,
+    order,
+    showComments
+  };
+}
+
+function validateState(data) {
+  if (!data || data.v !== 1 || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) return false;
+  for (const n of data.nodes) if (!n || typeof n.id !== "string") return false;
+  return true;
+}
+
 function saveState() {
   try {
-    const data = {
-      v: 1,
-      nodes: [...nodes.values()].map((n) => ({ ...n, children: n.children.slice() })),
-      edges,
-      idCounter,
-      viewport,
-      order,
-      showComments
-    };
-    localStorage.setItem(STORE_KEY, JSON.stringify(data));
+    localStorage.setItem(STORE_KEY, JSON.stringify(graphPayload()));
   } catch (e) {
     // переполнение хранилища или приватный режим — молча пропускаем
   }
+}
+
+// Полная замена состояния (v:1-граф из автосохранения или файла браузера).
+// Возвращает true при успехе. Используется «Открыть из браузера»; старт
+// приложения оставлен на прежнем loadState (поведение не меняется).
+function applyState(g) {
+  if (!validateState(g)) return false;
+  nodes.clear();
+  for (const n of g.nodes) nodes.set(n.id, { ...n, children: n.children || [] });
+  edges.length = 0;
+  edges.push(...g.edges);
+  order = (Array.isArray(g.order) && g.order.length) ? g.order.slice() : D2S.defaultOrder(currentGraph());
+  if (Number.isFinite(g.idCounter)) idCounter = g.idCounter;
+  if (g.viewport && Number.isFinite(g.viewport.x)) applyViewport({ ...g.viewport });
+  if (typeof g.showComments === "boolean") showComments = g.showComments;
+  selectedId = null;
+  selectedEdgeId = null;
+  edgeSrc = null;
+  groupParent = null;
+  mode = null;
+  render();
+  regenerateTextView();
+  updateUndoUI();
+  return true;
 }
 
 function loadState() {
@@ -497,24 +548,104 @@ function loadState() {
     return false;
   }
   if (!raw) return false;
+  let data;
   try {
-    const data = JSON.parse(raw);
-    if (!data || data.v !== 1 || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) return false;
-    nodes.clear();
-    for (const n of data.nodes) {
-      if (!n || typeof n.id !== "string") return false;
-      nodes.set(n.id, { ...n, children: n.children || [] });
-    }
-    edges.length = 0;
-    edges.push(...data.edges);
-    if (Number.isFinite(data.idCounter)) idCounter = data.idCounter;
-    if (data.viewport && Number.isFinite(data.viewport.x)) viewport = { ...data.viewport };
-    if (Array.isArray(data.order) && data.order.length) order = data.order;
-    if (typeof data.showComments === "boolean") showComments = data.showComments;
-    return true;
+    data = JSON.parse(raw);
   } catch (e) {
     return false;
   }
+  if (!validateState(data)) return false;
+  nodes.clear();
+  for (const n of data.nodes) nodes.set(n.id, { ...n, children: n.children || [] });
+  edges.length = 0;
+  edges.push(...data.edges);
+  if (Number.isFinite(data.idCounter)) idCounter = data.idCounter;
+  if (data.viewport && Number.isFinite(data.viewport.x)) viewport = { ...data.viewport };
+  if (Array.isArray(data.order) && data.order.length) order = data.order;
+  if (typeof data.showComments === "boolean") showComments = data.showComments;
+  return true;
+}
+
+// === Файлы в браузере: IndexedDB ============================================
+// БД `d2editor` (version 1), store `files` (keyPath "name"). Запись:
+// `{ name, v: 1, graph, savedAt, size }`, где `graph` — payload v:1
+// (тот же формат, что автосохранение). Любой сбой (open/onerror/onblocked,
+// NotFoundError store, deleteDatabase blocked) обрабатывается единым маршрутом
+// «База файлов браузера недоступна» (§6 плана).
+const DB_NAME = "d2editor";
+const DB_STORE = "files";
+let dbPromise = null;
+let dbHandle = null;
+
+function dbFiles() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(DB_STORE))
+        req.result.createObjectStore(DB_STORE, { keyPath: "name" });
+    };
+    req.onsuccess = () => { dbHandle = req.result; resolve(req.result); };
+    req.onerror = () => { dbPromise = null; reject(req.error); };
+    req.onblocked = () => { dbPromise = null; reject(new Error("blocked")); };
+  });
+  return dbPromise;
+}
+
+// Одна транзакция: cb(os) возвращает IDBRequest (resolve его результатом)
+// либо undefined для записей (resolve на oncomplete). reject на ошибке
+// транзакции/abort/исключении, включая NotFoundError от отсутствующего store.
+function idbOp(db, mode, cb) {
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(DB_STORE, mode); }
+    catch (e) { reject(e); return; }
+    let os;
+    try { os = tx.objectStore(DB_STORE); }
+    catch (e) { reject(e); return; }
+    let settled = false;
+    const onError = (e) => { if (!settled) { settled = true; reject(e); } };
+    tx.onerror = () => onError(tx.error || new Error("idb tx error"));
+    tx.onabort = () => onError(tx.error || new Error("idb tx aborted"));
+    tx.oncomplete = () => { if (!settled) { settled = true; resolve(undefined); } };
+    let req;
+    try { req = cb(os); }
+    catch (e) { onError(e); return; }
+    if (req) {
+      req.onsuccess = () => { if (!settled) { settled = true; resolve(req.result); } };
+    }
+  });
+}
+
+function fileList() {
+  return dbFiles().then((db) => idbOp(db, "readonly", (os) => os.getAll()))
+    .then((list) => (list || [])
+      .map((rec) => ({ name: rec.name, savedAt: rec.savedAt, v: rec.v, size: rec.size }))
+      .sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)));
+}
+function fileGet(name) { return dbFiles().then((db) => idbOp(db, "readonly", (os) => os.get(name))); }
+function filePut(name, g) {
+  const size = JSON.stringify(g).length;
+  return dbFiles().then((db) => idbOp(db, "readwrite", (os) => {
+    os.put({ name, v: 1, graph: g, savedAt: Date.now(), size });
+  }));
+}
+function fileDelete(name) { return dbFiles().then((db) => idbOp(db, "readwrite", (os) => os.delete(name))); }
+function fileReset() {
+  if (dbHandle) { try { dbHandle.close(); } catch (e) {} dbHandle = null; }
+  dbPromise = null;
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    req.onblocked = () => reject(new Error("blocked"));
+  }).then(() => dbFiles()).then(() => {});
+}
+
+function bytesText(n) {
+  if (n < 1024) return n + " Б";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " КБ";
+  return (n / 1048576).toFixed(1) + " МБ";
 }
 
 function absPos(n) {
@@ -653,6 +784,11 @@ panZoom.update({
 
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Escape for HTML attribute context: esc() + double quotes.
+function escAttr(s) {
+  return esc(s).replace(/"/g, "&quot;");
 }
 
 // Multi-line SVG text: one <tspan> per line, block vertically centered on y.
@@ -996,38 +1132,146 @@ async function handleNodeClick(n) {
   render();
 }
 
+// Modal framework. A single reusable session; the DOM keeps the static
+// #modal-overlay/#modal-box/#modal-title/#modal-input/#modal-actions elements
+// and one dynamic #modal-content container. Buttons are rebuilt per phase with
+// id="modal-ok" (primary) / id="modal-cancel" (cancel) so existing E2E and
+// keyboard flow keep working. A capture-phase document keydown swallows the
+// global handlers (undo hotkeys, Escape selection-clear) while the modal is up.
+let modalSession = null;
+
+function showModal(opts) {
+  if (modalSession) modalSession.close(null);   // single session: close the previous
+  if (modalBox.style.position === "fixed") {
+    const r = modalBox.getBoundingClientRect();
+    modalBox.style.left = Math.max(0, Math.min(parseFloat(modalBox.style.left) || r.left, window.innerWidth - r.width)) + "px";
+    modalBox.style.top = Math.max(0, Math.min(parseFloat(modalBox.style.top) || r.top, window.innerHeight - r.height)) + "px";
+  }
+  let closed = false;
+  let resolveClosed;
+  const closedPromise = new Promise((r) => { resolveClosed = r; });
+  const b = opts.behavior || {};
+  const behavior = {
+    allowOverlayClose: b.allowOverlayClose != null ? !!b.allowOverlayClose : !!opts.allowOverlayClose,
+    allowEscapeClose: b.allowEscapeClose != null ? !!b.allowEscapeClose : !!opts.allowEscapeClose,
+    onEnter: b.onEnter || opts.onEnter || null,
+    onEscape: b.onEscape || opts.onEscape || null
+  };
+  let buttons = opts.buttons || [];
+
+  modalTitle.textContent = opts.title || "";
+  modalContent.hidden = true;
+  modalContent.textContent = "";
+  modalInput.value = typeof opts.showInput === "string" ? opts.showInput : "";
+  setShowInput(opts.showInput != null);
+
+  function buildButtons(list) {
+    modalActions.textContent = "";
+    for (const b of list) {
+      const btn = document.createElement("button");
+      btn.textContent = b.label;
+      if (b.id) btn.id = b.id;
+      else if (b.primary) btn.id = "modal-ok";
+      else btn.id = "modal-cancel";
+      if (b.primary) btn.classList.add("primary");
+      btn.addEventListener("click", b.onClick || (() => close(null)));
+      modalActions.appendChild(btn);
+    }
+  }
+
+  function setShowInput(v) {
+    modalInput.hidden = !v;
+  }
+
+  function close(result) {
+    if (closed) return;
+    closed = true;
+    modalSession = null;
+    modalOverlay.hidden = true;
+    document.removeEventListener("keydown", onKey, true);
+    modalOverlay.removeEventListener("click", onOverlay);
+    resolveClosed(result);
+  }
+
+  function onKey(e) {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      if (behavior.onEnter) behavior.onEnter();
+      else {
+        const ok = modalActions.querySelector("#modal-ok");
+        if (ok && !ok.disabled) ok.click();
+      }
+    } else if (e.key === "Escape") {
+      if (behavior.onEscape) behavior.onEscape();
+      else if (behavior.allowEscapeClose) close(null);
+    }
+  }
+
+  function onOverlay(e) {
+    if (e.target !== modalOverlay) return;
+    if (behavior.allowOverlayClose) close(null);
+    else if (behavior.onEscape) behavior.onEscape();
+  }
+
+  document.addEventListener("keydown", onKey, true);
+  modalOverlay.addEventListener("click", onOverlay);
+  modalOverlay.hidden = false;
+  buildButtons(buttons);
+  if (opts.showInput != null) { modalInput.focus(); modalInput.select(); }
+
+  const session = {
+    closed: closedPromise,
+    setTitle(t) { modalTitle.textContent = t; },
+    setShowInput(v) { setShowInput(!!v); if (v) { modalInput.focus(); modalInput.select(); } },
+    setText(t) {
+      modalContent.textContent = t;
+      modalContent.hidden = t == null;
+      modalInput.hidden = t != null;
+    },
+    setContent(html) {
+      modalContent.innerHTML = html;
+      modalContent.hidden = false;
+      modalInput.hidden = true;
+    },
+    setButtons(list) { buttons = list; buildButtons(list); },
+    setBehavior(partial) { Object.assign(behavior, partial); },
+    close
+  };
+  modalSession = session;
+  return session;
+}
+
 function openEditDialog(opts) {
   return new Promise((resolve) => {
-    if (modalBox.style.position === "fixed") {
-      const r = modalBox.getBoundingClientRect();
-      modalBox.style.left = Math.max(0, Math.min(parseFloat(modalBox.style.left) || r.left, window.innerWidth - r.width)) + "px";
-      modalBox.style.top = Math.max(0, Math.min(parseFloat(modalBox.style.top) || r.top, window.innerHeight - r.height)) + "px";
-    }
-    modalTitle.textContent = opts.title;
-    modalInput.value = opts.value || "";
-    modalOverlay.hidden = false;
-    modalInput.focus();
-    modalInput.select();
-    const done = (val) => {
-      modalOverlay.hidden = true;
-      modalOverlay.removeEventListener("click", onOverlay);
-      modalOk.removeEventListener("click", onOk);
-      modalCancel.removeEventListener("click", onCancel);
-      modalInput.removeEventListener("keydown", onKey);
-      resolve(val);
-    };
-    const onOk = () => done(modalInput.value);
-    const onCancel = () => done(null);
-    const onOverlay = (e) => { if (e.target === modalOverlay) done(null); };
-    const onKey = (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") onOk();
-      else if (e.key === "Escape") onCancel();
-    };
-    modalOverlay.addEventListener("click", onOverlay);
-    modalOk.addEventListener("click", onOk);
-    modalCancel.addEventListener("click", onCancel);
-    modalInput.addEventListener("keydown", onKey);
+    const s = showModal({
+      title: opts.title,
+      showInput: opts.value || "",
+      buttons: [
+        { label: "Отмена", id: "modal-cancel", onClick: () => s.close(null) },
+        { label: "OK", primary: true, id: "modal-ok", onClick: () => s.close(modalInput.value) }
+      ],
+      behavior: { allowOverlayClose: true, allowEscapeClose: true, onEnter: () => s.close(modalInput.value) }
+    });
+    s.closed.then(resolve);
+  });
+}
+
+// Confirmation prompt — only used when no modal is open yet (e.g. the
+// "database unavailable" path from "Открыть из браузера"). Phases that need a
+// confirm while another window is up are implemented inline on that session.
+function confirmDialog(message, { okLabel = "OK", cancelLabel = "Отмена", title = "Подтверждение" } = {}) {
+  return new Promise((resolve) => {
+    const s = showModal({
+      title,
+      showInput: null,
+      buttons: [
+        { label: cancelLabel, id: "modal-cancel", onClick: () => s.close("cancel") },
+        { label: okLabel, primary: true, id: "modal-ok", onClick: () => s.close("ok") }
+      ],
+      behavior: { allowOverlayClose: false, allowEscapeClose: true }
+    });
+    s.setText(message);
+    s.closed.then(resolve);
   });
 }
 
@@ -1273,8 +1517,11 @@ copyMenu.addEventListener("click", (e) => {
   setCopyMenu(false);
   if (act === "paste") pasteFromClipboard();
   else if (act === "replace") replaceFromClipboard();
-  else if (act === "import") importFile.click();
-  else if (act === "export") exportD2();
+  else if (act === "open-browser") openFileListModal();
+  else if (act === "save-browser") saveToBrowser();
+  else if (act === "import-file") importFile.click();
+  else if (act === "export-file") exportDd2();
+  else if (act === "export-d2") exportStandardD2();
   else if (act === "export-svg") exportSVG();
   else if (act === "export-drawio") setStatus("Экспорт в Draw.io — в разработке", false);
   else if (act === "export-mermaid") setStatus("Экспорт в Mermaid — в разработке", false);
@@ -1333,18 +1580,20 @@ importFile.addEventListener("change", async () => {
   applyCode(txt);
 });
 
-async function exportD2() {
-  const content = outEl.value;
+async function downloadCode(content, ext, base) {
+  base = base || exportName || currentFile || "diagram";
+  const bare = base.replace(/\.[^./\\]+$/, "") || "diagram";
+  const suggested = bare + ext;
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
-        suggestedName: exportName || "diagram.d2",
-        types: [{ description: "D2-схема", accept: { "application/x-d2": [".d2"] } }],
+        suggestedName: suggested,
+        types: [{ description: "Диаграмма D2", accept: { "application/x-d2": [ext] } }],
         excludeAcceptAllOption: true
       });
       let name = handle.name;
-      if (!/\.d2$/i.test(name)) {
-        const fixed = (name.replace(/\.\w+$/, "") || "diagram") + ".d2";
+      if (!name.toLowerCase().endsWith(ext)) {
+        const fixed = (name.replace(/\.[^./\\]+$/, "") || "diagram") + ext;
         try {
           await handle.move(fixed);
           name = fixed;
@@ -1353,26 +1602,30 @@ async function exportD2() {
       const writable = await handle.createWritable();
       await writable.write(content);
       await writable.close();
-      exportName = name;
-      saveUiPrefs({ exportName: name });
-      setStatus("Экспортировано в " + name, true);
-      setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
-      return;
+      return name;
     } catch (e) {
       if (e.name !== "AbortError") setStatus("Не удалось экспортировать файл", false);
-      return;
+      return null;
     }
   }
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = exportName || "diagram.d2";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(a.href);
-  setStatus("Экспортировано в " + (exportName || "diagram.d2"), true);
+  downloadBlob(content, "text/plain;charset=utf-8", suggested);
+  return suggested;
+}
+
+async function exportFile(content, ext) {
+  const name = await downloadCode(content, ext);
+  if (!name) return;
+  exportName = name;
+  saveUiPrefs({ exportName });
+  setStatus("Экспортировано в " + name, true);
   setTimeout(() => { document.getElementById("outStatus").textContent = ""; }, 1500);
+}
+
+function exportDd2() {        // «Экспорт в файл» — аннотированный .dd2
+  exportFile(D2S.serializeAnnotated(currentGraph(), { refText: outEl.value }), ".dd2");
+}
+function exportStandardD2() { // «Экспорт в D2» — стандарт без маркеров
+  exportFile(D2S.toStandardD2(currentGraph(), outEl.value), ".d2");
 }
 
 const SVG_FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
@@ -1579,6 +1832,256 @@ function saveUiPrefs(extra) {
   } catch (e) {}
 }
 
+function updateFileLabel() {
+  const el = document.getElementById("fileLabel");
+  el.textContent = currentFile ? "Файл: " + currentFile : "";
+  el.hidden = !currentFile;
+}
+
+// === Файлы в браузере: модалки ==============================================
+// Единый маршрут «база недоступна». Пересоздание сбрасывает БД (удаляются
+// сохранённые файлы). После успешного reset вызывающий повторяет команду.
+async function handleIdbDown() {
+  const res = await confirmDialog(
+    "База файлов браузера недоступна (повреждена или заблокирована). Пересоздание удалит сохранённые файлы.",
+    { okLabel: "Пересоздать базу файлов", title: "База файлов браузера недоступна" }
+  );
+  if (res !== "ok") return false;
+  try { await fileReset(); } catch (e) { return retryIdbDown(1); }
+  return true;
+}
+async function retryIdbDown(attempt) {
+  if (attempt >= 2) return false;
+  return handleIdbDown();
+}
+
+// Сохранение: одна сессия showModal, фазы «ввод имени» → «подтверждение
+// перезаписи» (окно не закрывается) → «база недоступна» (инлайн). Ниже поля
+// имени показывается список сохранённых файлов (как в открытии, но без
+// кнопки «Открыть»; «Удалить» — работает).
+async function saveToBrowser() {
+  const s = showModal({
+    title: "Сохранить в браузер",
+    showInput: currentFile || "diagram",
+    buttons: [
+      { label: "Отмена", id: "modal-cancel", onClick: () => s.close(null) },
+      { label: "Сохранить", primary: true, id: "modal-ok", onClick: () => doSave() }
+    ],
+    behavior: { allowOverlayClose: true, allowEscapeClose: true, onEnter: () => doSave() }
+  });
+  filesModal = s;
+  s._kind = "save";
+  s._confirmDel = (name) => confirmDeleteSaveFile(name);
+  s.closed.then(() => { if (filesModal === s) filesModal = null; });
+
+  const toInput = () => {
+    saveHint("", true);
+    s.setTitle("Сохранить в браузер");
+    s.setButtons([
+      { label: "Отмена", id: "modal-cancel", onClick: () => s.close(null) },
+      { label: "Сохранить", primary: true, id: "modal-ok", onClick: () => doSave() }
+    ]);
+    s.setBehavior({ allowOverlayClose: true, allowEscapeClose: true, onEnter: () => doSave() });
+    modalInput.focus();
+    modalInput.select();
+  };
+
+  const toIdbDown = () => {
+    s.setText("База файлов браузера недоступна (повреждена или заблокирована). Пересоздание удалит сохранённые файлы.");
+    s.setShowInput(false);
+    s.setButtons([
+      { label: "Отмена", id: "modal-cancel", onClick: () => s.close(null) },
+      { label: "Пересоздать базу файлов", primary: true, id: "modal-ok", onClick: async () => {
+        try { await fileReset(); }
+        catch (e) { s.setText("Не удалось пересоздать базу файлов (заблокирована). Попробуйте ещё раз."); return; }
+        try { renderSaveList(s, await fileList()); }
+        catch (e2) { return toIdbDown(); }
+        modalInput.focus();
+        modalInput.select();
+        doSave();
+      } }
+    ]);
+    s.setBehavior({ allowOverlayClose: false, allowEscapeClose: false });
+  };
+
+  async function refreshSaveList() {
+    let list;
+    try { list = await fileList(); }
+    catch (e) { return toIdbDown(); }
+    renderSaveList(s, list);
+    modalInput.focus();
+    modalInput.select();
+  }
+
+  function confirmDeleteSaveFile(name) {
+    saveHint('Удалить файл "' + name + '" из браузера?', false);
+    s.setButtons([
+      { label: "Отмена", id: "modal-cancel", onClick: refreshSaveList },
+      { label: "Удалить", primary: true, id: "modal-ok", onClick: async () => {
+        try { await fileDelete(name); }
+        catch (e) { setStatus("Не удалось удалить файл", false); return; }
+        refreshSaveList();
+      } }
+    ]);
+    s.setBehavior({ allowOverlayClose: false, allowEscapeClose: false, onEscape: refreshSaveList });
+  }
+
+  async function doSave() {
+    const name = modalInput.value.trim();
+    if (!name) {
+      if (!document.getElementById("save-hint")) await refreshSaveList();
+      saveHint("Введите имя диаграммы", true);
+      return;
+    }
+    let list;
+    try { list = await fileList(); }
+    catch (e) { return toIdbDown(); }
+    if (!list.some((f) => f.name === name)) return commit(name);
+    saveHint('Диаграмма с именем "' + name + '" уже существует.', false);
+    s.setButtons([
+      { label: "Отмена", id: "modal-cancel", onClick: toInput },
+      { label: "Заменить", primary: true, id: "modal-ok", onClick: () => commit(name) }
+    ]);
+    s.setBehavior({ allowOverlayClose: false, allowEscapeClose: false, onEscape: toInput });
+  }
+
+  async function commit(name) {
+    try { await filePut(name, graphPayload()); }
+    catch (e) { s.setText("Не удалось сохранить файл в браузере"); return; }
+    currentFile = name;
+    saveUiPrefs({ currentFile });
+    updateFileLabel();
+    s.close(true);
+    setStatus("Сохранено в браузер: " + name, true);
+  }
+
+  let list;
+  try { list = await fileList(); }
+  catch (e) { return toIdbDown(); }
+  renderSaveList(s, list);
+  modalInput.focus();
+  modalInput.select();
+}
+
+// Список файлов в окне сохранения: только кнопка «Удалить»; поле имени
+// остаётся видимым (setContent его прячет — возвращаем обратно).
+function renderSaveList(s, list) {
+  const rows = list.map((f) =>
+    '<div class="file-row" data-name="' + escAttr(f.name) + '">' +
+      '<span class="file-info">' + esc(f.name) + " · " + new Date(f.savedAt).toLocaleString() + "</span>" +
+      '<button data-del="1">Удалить</button>' +
+    "</div>").join("");
+  const body = list.length
+    ? '<div id="files-list">' + rows + "</div>"
+    : '<div class="content-p">Нет сохранённых файлов</div>';
+  s.setContent('<div id="save-hint"></div>' + body + '<div id="files-storage"></div>');
+  modalInput.hidden = false;
+  fillStorageLine();
+}
+
+function saveHint(text, showInput) {
+  const el = document.getElementById("save-hint");
+  if (el) el.textContent = text || "";
+  modalInput.hidden = !showInput;
+}
+
+// Открытие/удаление: список с делегированием кликов на постоянном
+// контейнере #modal-content (единое для всех фаз).
+let filesModal = null;
+
+async function openFileListModal() {
+  let list;
+  try { list = await fileList(); }
+  catch (e) { if (await handleIdbDown()) return openFileListModal(); return; }
+  const s = showModal({
+    title: "Открыть из браузера",
+    showInput: null,
+    buttons: [{ label: "Закрыть", id: "modal-cancel", onClick: () => s.close(null) }],
+    behavior: { allowOverlayClose: true, allowEscapeClose: true }
+  });
+  filesModal = s;
+  s.closed.then(() => { if (filesModal === s) filesModal = null; });
+  renderFileList(s, list);
+}
+
+function renderFileList(s, list) {
+  if (!list.length) {
+    s.setText("Нет сохранённых файлов");
+  } else {
+    const rows = list.map((f) =>
+      '<div class="file-row" data-name="' + escAttr(f.name) + '">' +
+        '<span class="file-info">' + esc(f.name) + " · " + new Date(f.savedAt).toLocaleString() + "</span>" +
+        '<button data-open="1">Открыть</button><button data-del="1">Удалить</button>' +
+      "</div>").join("");
+    s.setContent('<div id="files-list">' + rows + '<div id="files-storage"></div></div>');
+  }
+  fillStorageLine();
+}
+
+async function refreshList(s) {
+  let list;
+  try { list = await fileList(); }
+  catch (e) { return s.close(null); }
+  renderFileList(s, list);
+}
+
+async function fillStorageLine() {
+  const el = document.getElementById("files-storage");
+  if (!el) return;
+  const files = await fileList().catch(() => null);
+  if (files) el.textContent = "Файлы: " + files.length + ", занято " + bytesText(files.reduce((a, f) => a + (f.size || 0), 0));
+  let est = null;
+  try { if (navigator.storage && navigator.storage.estimate) est = await navigator.storage.estimate(); } catch (e) {}
+  if (est && Number.isFinite(est.quota) && Number.isFinite(est.usage)) {
+    const free = Math.max(0, est.quota - est.usage);
+    el.textContent += " · Занято " + bytesText(est.usage) + " из " + bytesText(est.quota)
+      + " (свободно " + bytesText(free) + ")";
+  }
+}
+
+async function openStoredFile(name, s) {
+  let rec;
+  try { rec = await fileGet(name); }
+  catch (e) { setStatus("Не удалось прочитать файл", false); return; }
+  if (!rec || !validateState(rec.graph)) { setStatus("Файл повреждён и пропущен", false); return; }
+  applyState(rec.graph);
+  D2HIST.clearHistory(history);
+  updateUndoUI();
+  saveState();
+  currentFile = name;
+  saveUiPrefs({ currentFile });
+  updateFileLabel();
+  s.close(null);
+  setStatus("Открыт: " + name, true);
+}
+
+function confirmDeleteFile(name, s) {
+  s.setText('Удалить файл "' + name + '" из браузера?');
+  s.setShowInput(false);
+  s.setButtons([
+    { label: "Отмена", id: "modal-cancel", onClick: () => refreshList(s) },
+    { label: "Удалить", primary: true, id: "modal-ok", onClick: async () => {
+      try { await fileDelete(name); }
+      catch (e) { setStatus("Не удалось удалить файл", false); return; }
+      refreshList(s);
+    } }
+  ]);
+  s.setBehavior({ allowOverlayClose: false, allowEscapeClose: false });
+}
+
+// Делегирование кликов по строкам списка (#files-list внутри #modal-content).
+modalContent.addEventListener("click", (e) => {
+  if (!filesModal) return;
+  const row = e.target.closest(".file-row");
+  if (!row) return;
+  const name = row.getAttribute("data-name");
+  if (e.target.closest("[data-open]")) openStoredFile(name, filesModal);
+  else if (e.target.closest("[data-del]")) {
+    if (filesModal._confirmDel) filesModal._confirmDel(name);
+    else confirmDeleteFile(name, filesModal);
+  }
+});
+
 const codePanel = document.getElementById("code-panel");
 const divider = document.getElementById("divider");
 const splitEl = document.getElementById("split");
@@ -1609,8 +2112,10 @@ try {
       codePanel.style.width = Math.max(200, Math.min(maxW, ui.codeWidth)) + "px";
     }
     if (ui && typeof ui.exportName === "string") exportName = ui.exportName;
+    if (ui && typeof ui.currentFile === "string") currentFile = ui.currentFile;
   }
 } catch (e) {}
+updateFileLabel();
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

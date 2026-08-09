@@ -10,6 +10,8 @@
 
 Всё из §3 выполнено; тесты: `npm test` — 224 зелёных (193 юнит + 31 UI; `node --test test/` гоняет и UI-файлы), `npm run test:ui` — 31 зелёный (22 smoke + 9 history).
 
+> Счётчики — на момент завершения части 1. После части 2 (файлы в браузере): `npm test` — 241, `npm run test:ui` — 46 (22 smoke + 9 history + 15 ui-files).
+
 Файлы: `js/d2-history.js` (этап 1, с 2 правками), `test/history.test.mjs` (15 юнит), `test/ui-history.test.mjs` (9 E2E), интеграция в `index.html` (кнопки `#btnUndo`/`#btnRedo`, хоткеи Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y вне полей ввода, точки записи во всех мутациях, `applyPatchToLive`, `undoLimit` из ui-prefs).
 
 **Найденные при реализации расхождения плана с реальностью (уже исправлены в коде):**
