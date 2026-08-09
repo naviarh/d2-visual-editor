@@ -151,6 +151,9 @@
   <div id="divider" title="Перетащите, чтобы изменить ширину"></div>
   <div id="flow">
     <div class="flowbar"><b>Схема</b>
+      <button id="btnUndo" title="Отменить (Ctrl+Z)" disabled>↩</button>
+      <button id="btnRedo" title="Вернуть (Ctrl+Y)" disabled>↪</button>
+      <span class="sep"></span>
       <button id="btnBlock">+ Блок</button>
       <select id="shapeSel" title="Форма блока (выбранного или по умолчанию для новых)"></select>
       <button id="btnGroup">Группировать блоки</button>
@@ -191,6 +194,7 @@
 <script src="js/d2-layout.js"></script>
 <script src="js/d2-sort.js"></script>
 <script src="js/d2-shapes.js"></script>
+<script src="js/d2-history.js"></script>
 <script>
 "use strict";
 
@@ -201,6 +205,7 @@ const D2M = window.d2merge;
 const D2L = window.d2layout;
 const D2SORT = window.d2sort;
 const D2SHP = window.d2shapes;
+const D2HIST = window.d2history;
 const pane = document.getElementById("pane");
 const viewportEl = document.getElementById("viewport");
 const nodesEl = document.getElementById("nodes");
@@ -213,6 +218,8 @@ const modalOk = document.getElementById("modal-ok");
 const modalCancel = document.getElementById("modal-cancel");
 const shapeSel = document.getElementById("shapeSel");
 const dirSel = document.getElementById("dirSel");
+const btnUndo = document.getElementById("btnUndo");
+const btnRedo = document.getElementById("btnRedo");
 
 shapeSel.innerHTML = '<option value="">Тип блока</option>'
   + D2SHP.SHAPE_NAMES.map((s) => '<option value="' + esc(s) + '">' + esc(s) + '</option>').join("");
@@ -276,6 +283,7 @@ const EDGE_TIP_W = 12;
 let saveTimer = null;
 let genTimer = null;
 let textTimer = null;
+let history = null;
 
 function queueGen() {
   clearTimeout(genTimer);
@@ -294,6 +302,7 @@ function currentGraph() {
       x: n.x || 0,
       y: n.y || 0,
       hasPos: true,
+      implicit: !!n.implicit,
       comments: n.comments || [],
       trailingComment: n.trailingComment || null,
       rawAttrs: n.rawAttrs || []
@@ -301,6 +310,7 @@ function currentGraph() {
   }
   const es = edges.map((e) => ({
     ...e,
+    label: e.label || null,
     comments: e.comments || [],
     trailingComment: e.trailingComment || null,
     rawAttrs: e.rawAttrs || []
@@ -319,6 +329,69 @@ function applyGraph(g) {
   order = g.order.slice();
   idCounter = g.idCounter;
 }
+
+const UNDO_LIMIT_DEFAULT = 100;
+const UNDO_LIMIT_MIN = 1;
+const UNDO_LIMIT_MAX = 1000;
+
+// History helpers: a mutation captures the pre-state, mutates, then calls
+// pushIfChanged(prev) which stores the diff only when something actually
+// changed (an empty diff — e.g. a whitespace text edit — records nothing).
+function snapshotState() {
+  return typeof structuredClone === "function"
+    ? structuredClone(currentGraph())
+    : JSON.parse(JSON.stringify(currentGraph()));
+}
+function liveState() { return currentGraph(); }
+function pushIfChanged(prev) {
+  const patch = D2HIST.diffStates(prev, liveState());
+  if (patch) {
+    D2HIST.pushState(history, patch);
+    updateUndoUI();
+  }
+}
+function updateUndoUI() {
+  btnUndo.disabled = !D2HIST.canUndo(history);
+  btnRedo.disabled = !D2HIST.canRedo(history);
+}
+function undoLimitPref() {
+  try {
+    const raw = localStorage.getItem(UI_KEY);
+    if (raw) {
+      const ui = JSON.parse(raw);
+      const v = Number(ui.undoLimit);
+      if (Number.isFinite(v)) return Math.max(UNDO_LIMIT_MIN, Math.min(UNDO_LIMIT_MAX, Math.floor(v)));
+    }
+  } catch (e) {}
+  return UNDO_LIMIT_DEFAULT;
+}
+function applyPatchToLive(patch, dir) {
+  clearTimeout(textTimer);
+  const st = { nodes, edges, order, idCounter, viewport, showComments };
+  D2HIST.applyStatePatch(st, patch, dir);
+  order = st.order;
+  idCounter = st.idCounter;
+  viewport = st.viewport;
+  showComments = st.showComments;
+  if (patch.viewport) applyViewport(viewport);
+  selectedId = null;
+  selectedEdgeId = null;
+  edgeSrc = null;
+  groupParent = null;
+  render();
+  regenerateTextView();
+  updateUndoUI();
+}
+function undoAction() {
+  const patch = D2HIST.undo(history);
+  if (patch) applyPatchToLive(patch, "before");
+}
+function redoAction() {
+  const patch = D2HIST.redo(history);
+  if (patch) applyPatchToLive(patch, "after");
+}
+btnUndo.addEventListener("click", undoAction);
+btnRedo.addEventListener("click", redoAction);
 
 function syncOrder() {
   const seen = new Set();
@@ -355,10 +428,12 @@ function setStatus(text, ok) {
 }
 
 function togglePositions() {
+  const prev = snapshotState();
   const out = document.getElementById("out");
   const clean = out.value === lastGraphText;
   showComments = !showComments;
   if (clean) regenerateTextView();
+  pushIfChanged(prev);
   queueSave();
 }
 
@@ -369,6 +444,7 @@ function onTextEdit() {
     setStatus("Ошибка D2: строка " + r.error.line + " — " + r.error.message, false);
     return;
   }
+  const prev = liveState();
   const merged = D2M.mergeGraph(r.graph, currentGraph(), { selectedId, selectedEdgeId });
   const added = merged.added;
   const removed = merged.removed;
@@ -388,6 +464,7 @@ function onTextEdit() {
     lastGraphText = out.value;
     setStatus("Синхронизировано", true);
   }
+  pushIfChanged(prev);
 }
 
 function queueSave() {
@@ -815,11 +892,13 @@ function render() {
   renderEdges();
   renderNodes();
   renderHint();
+  updateUndoUI();
   queueSave();
   queueGen();
 }
 
 function startDrag(e, n) {
+  const prev = liveState();
   let lastX = e.clientX, lastY = e.clientY, moved = false;
   function onMove(ev) {
     const dx = ev.clientX - lastX, dy = ev.clientY - lastY;
@@ -835,19 +914,21 @@ function startDrag(e, n) {
   function onUp() {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
-    if (!moved) {
-      // The first click re-renders nodes (renderNodes rebuilds the DOM), so a
-      // native dblclick would never fire on the replaced element. Detect the
-      // double click manually by node id + time instead.
-      const now = Date.now();
-      const isDbl = lastClickId === n.id && now - lastClickTime < 500;
-      lastClickId = n.id;
-      lastClickTime = now;
-      if (isDbl) {
-        renameNode(n);
-      } else {
-        handleNodeClick(n);
-      }
+    if (moved) {
+      pushIfChanged(prev);
+      return;
+    }
+    // The first click re-renders nodes (renderNodes rebuilds the DOM), so a
+    // native dblclick would never fire on the replaced element. Detect the
+    // double click manually by node id + time instead.
+    const now = Date.now();
+    const isDbl = lastClickId === n.id && now - lastClickTime < 500;
+    lastClickId = n.id;
+    lastClickTime = now;
+    if (isDbl) {
+      renameNode(n);
+    } else {
+      handleNodeClick(n);
     }
   }
   window.addEventListener("pointermove", onMove);
@@ -855,6 +936,7 @@ function startDrag(e, n) {
 }
 
 async function handleNodeClick(n) {
+  const prev = liveState();
   selectedEdgeId = null;
   if (mode === "edge") {
     if (!edgeSrc) {
@@ -878,6 +960,7 @@ async function handleNodeClick(n) {
     if (dir !== "->") edge.dir = dir;
     edges.push(edge);
     order.push(id);
+    pushIfChanged(prev);
     render();
     return;
   }
@@ -905,6 +988,7 @@ async function handleNodeClick(n) {
       n.y = a.y - pa.y;
     }
     normalizeContainer(par);
+    pushIfChanged(prev);
     render();
     return;
   }
@@ -948,6 +1032,7 @@ function openEditDialog(opts) {
 }
 
 async function renameNode(n) {
+  const prev = liveState();
   const raw = (await openEditDialog({ title: "Новое название блока:", value: D2S.d2Escape(n.label || "") }) || "").trim();
   const name = D2P.decodeEscapes(raw);
   if (!name) return;
@@ -974,20 +1059,24 @@ async function renameNode(n) {
   n.id = id;
   n.label = name;
   nodes.set(id, n);
+  pushIfChanged(prev);
   render();
 }
 
 async function renameEdge(id) {
+  const prev = liveState();
   const ed = edges.find((e) => e.id === id);
   if (!ed) return;
   const raw = (await openEditDialog({ title: "Подпись стрелки:", value: ed.label ? D2S.d2Escape(ed.label) : "" }) || "").trim();
   const label = D2P.decodeEscapes(raw);
   if (label === ed.label) return;
   ed.label = label;
+  pushIfChanged(prev);
   render();
 }
 
 function deleteNode(id) {
+  const prev = liveState();
   const n = nodes.get(id);
   if (!n) return;
   for (const cid of n.children.slice()) {
@@ -1007,15 +1096,18 @@ function deleteNode(id) {
   if (selectedId === id) selectedId = null;
   if (edgeSrc === id) edgeSrc = null;
   if (groupParent === id) groupParent = null;
+  pushIfChanged(prev);
   render();
 }
 
 function deleteEdge(id) {
+  const prev = liveState();
   const i = edges.findIndex((ed) => ed.id === id);
   if (i < 0) return;
   edges.splice(i, 1);
   syncOrder();
   selectedEdgeId = null;
+  pushIfChanged(prev);
   render();
 }
 
@@ -1028,6 +1120,7 @@ function centerFlow() {
 }
 
 async function addBlock() {
+  const prev = liveState();
   const label = D2P.decodeEscapes((await openEditDialog({ title: "Название блока:", value: "" }) || "").trim()) || ("Блок " + (idCounter++));
   let id = label, i = 2;
   while (nodes.has(id)) id = label + "-" + (i++);
@@ -1040,6 +1133,7 @@ async function addBlock() {
   nodes.set(id, n);
   order.push(id);
   selectedId = id;
+  pushIfChanged(prev);
   render();
 }
 
@@ -1083,21 +1177,25 @@ document.getElementById("btnGroup").onclick = () => toggleMode("group");
 // default shape for new blocks (the selector stays enabled either way), the
 // same split of roles as dirSel for edge direction.
 shapeSel.onchange = () => {
+  const prev = liveState();
   const n = nodes.get(selectedId);
   if (!n || isContainer(n)) return;
   const v = shapeSel.value;
   if (!v) delete n.shape;
   else n.shape = v;
+  pushIfChanged(prev);
   render();
 };
 // With an edge selected the choice changes its direction; otherwise it becomes
 // the default direction for new edges (button stays enabled either way).
 dirSel.onchange = () => {
+  const prev = liveState();
   const ed = selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : null;
   if (!ed) return;
   const v = dirSel.value;
   if (v === "->") delete ed.dir;
   else ed.dir = v;
+  pushIfChanged(prev);
   render();
 };
 document.getElementById("btnZoomIn").onclick = () => panZoom.scaleBy(1.3);
@@ -1105,7 +1203,9 @@ document.getElementById("btnZoomOut").onclick = () => panZoom.scaleBy(1 / 1.3);
 document.getElementById("btnFit").onclick = fitView;
 document.getElementById("btnPos").onclick = togglePositions;
 document.getElementById("btnSort").onclick = () => {
+  const prev = liveState();
   applyGraph(D2SORT.sortByArrows(currentGraph()));
+  pushIfChanged(prev);
   render();
   if (document.getElementById("out").value === lastGraphText) regenerateTextView();
   queueSave();
@@ -1523,6 +1623,12 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z" && e.shiftKey) { e.preventDefault(); redoAction(); return; }
+    if (k === "y") { e.preventDefault(); redoAction(); return; }
+    if (k === "z") { e.preventDefault(); undoAction(); return; }
+  }
   if (e.key === "Delete" || e.key === "Backspace") {
     if (selectedEdgeId) {
       e.preventDefault();
@@ -1626,6 +1732,7 @@ function seed() {
 const restored = loadState();
 if (!restored) seed();
 if (!order.length) order = D2S.defaultOrder(currentGraph());
+history = D2HIST.createHistory(undoLimitPref());
 applyViewport(viewport);
 render();
 regenerateTextView();

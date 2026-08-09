@@ -24,9 +24,9 @@
 - `index.html` — весь UI (тулбар, текстовый редактор слева, интерактивная схема на @xyflow/system справа). Инлайн-скрипт — современный JS (const/arrow/template). Открывается как `file://` (без сборки); `@xyflow/system` — локальная UMD-сборка в `vendor/xyflow-system-0.0.79.umd.js` (офлайн, без CDN).
 - `js/*.js` — логика графа, вынесена в **ES5 UMD-модули** (браузер + CommonJS). Не используют DOM.
 - **Граф — источник истины** для хранения и структуры. **D2-текст — проекция графа** (два сериализатора: чистый и аннотированный). Правки текста сливаются в граф через merge-слой, который переносит позиции.
-- Хранилище: `localStorage["d2editor:v1"]` (payload `v:1`, legacy-совместимо). **Не переименовывайте ключ** без миграции. UI-предпочтения — отдельно, `localStorage["d2editor:ui:v1"]` (`{codeWidth, exportName}` — ширина панели кода и запомненное имя файла экспорта).
-- UI: панель «Код D2» — textarea + split-button «Копировать» с меню по шеврону (`#copy-menu`, `data-act`): `paste`/`replace`/`import`/`export`, затем `export-svg` (реализован), `export-drawio`/`export-mermaid`/`import-mermaid` (стабы «в разработке»). Панель «Схема» (@xyflow/system): + Блок, Стрелка, селект направления `#dirSel` (всегда активен; показывает направление выбранной стрелки или служит дефолтом для новых), Группировать, селект формы (`#shapeSel`) — так же всегда активен (показывает форму выбранного блока или служит дефолтом для новых блоков по «+ Блок»), Упорядочить по связям, +/−, Fit; pan/zoom, drag блоков, dblclick-rename через собственный модальный диалог. Диалог ведёт себя как редактор кода: префилл показывает метку в D2-форме (`D2S.d2Escape`), сохранённое значение декодируется `D2P.decodeEscapes` — введённый `\n` значит перенос строки (не `\\n`). Выделение: клик по блоку/стрелке выбирает, повторный клик по тому же элементу снимает выбор; клик по пустому месту визуального поля снимает выбор и блока, и стрелки.
-- Тесты: `node:test`, 200 зелёных (`npm test`), E2E на puppeteer-core — 22 сценария (`npm run test:ui`).
+- Хранилище: `localStorage["d2editor:v1"]` (payload `v:1`, legacy-совместимо). **Не переименовывайте ключ** без миграции. UI-предпочтения — отдельно, `localStorage["d2editor:ui:v1"]` (`{codeWidth, exportName, undoLimit}` — ширина панели кода, запомненное имя файла экспорта и глубина undo/redo).
+- UI: панель «Код D2» — textarea + split-button «Копировать» с меню по шеврону (`#copy-menu`, `data-act`): `paste`/`replace`/`import`/`export`, затем `export-svg` (реализован), `export-drawio`/`export-mermaid`/`import-mermaid` (стабы «в разработке»). Панель «Схема» (@xyflow/system): + Блок, Стрелка, селект направления `#dirSel` (всегда активен; показывает направление выбранной стрелки или служит дефолтом для новых), Группировать, селект формы (`#shapeSel`) — так же всегда активен (показывает форму выбранного блока или служит дефолтом для новых блоков по «+ Блок»), Упорядочить по связям, +/−, Fit; undo/redo — кнопки `#btnUndo`/`#btnRedo` (↩/↪ перед «+ Блок») и хоткеи **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y вне полей ввода** (в textarea работает нативный откат текста браузера), глубина — преф `undoLimit` в `d2editor:ui:v1` (default 100). pan/zoom, drag блоков, dblclick-rename через собственный модальный диалог. Диалог ведёт себя как редактор кода: префилл показывает метку в D2-форме (`D2S.d2Escape`), сохранённое значение декодируется `D2P.decodeEscapes` — введённый `\n` значит перенос строки (не `\\n`). Выделение: клик по блоку/стрелке выбирает, повторный клик по тому же элементу снимает выбор; клик по пустому месту визуального поля снимает выбор и блока, и стрелки.
+- Тесты: `node:test`, 224 зелёных (`npm test`), E2E на puppeteer-core — 31 сценарий (`npm run test:ui`).
 
 ## 2. Карта модулей
 
@@ -37,6 +37,7 @@
 | `js/d2-merge.js` | `D2M = window.d2merge` | Слияние распарсенного графа с текущим, перенос позиций | `mergeGraph(parsed, current, {selectedId, selectedEdgeId})` → `{graph, added, removed, selectedId, selectedEdgeId}` |
 | `js/d2-layout.js` | `D2L = window.d2layout` | Авто-расстановка новых нод | `placeNewNode(graph, nodeId, {center})`; константы `PAD/HEAD/GAP/MARGIN/STEP` |
 | `js/d2-sort.js` | `D2SORT = window.d2sort` | Упорядочение блоков по стрелкам | `sortByArrows(graph)` → новый граф (не мутирует вход) |
+| `js/d2-history.js` | `D2HIST = window.d2history` | Undo/redo: diff-патчи между состояниями, стек, применение | `createHistory(limit)`, `pushState(hist, patch)`, `undo`/`redo`, `diffStates(prev, next)` → `patch` (или `null`), `applyStatePatch(state, patch, dir)` |
 | `js/d2-shapes.js` | `D2SHP = window.d2shapes` | Реестр 18 форм: геометрия, контур, анкоровка | `renderShape(name, box)` → SVG-пути; `outlinePoints(name, box)` → полигон; `outlineIntersect(points, cx, cy, dx, dy)` → точка на контуре; `normalizeRatio(name, w, h)` → 1:1 для `circle`/`square`; `SHAPE_NAMES` |
 
 UMD-паттерн в конце каждого модуля:
@@ -103,8 +104,8 @@ Toggle «Скрыть/Показать позиции»: переписывае�
 ## 8. Тестирование (обязательно перед завершением задачи)
 
 ```bash
-npm test          # 200 юнит-тестов (node:test), включая d2 CLI-паритет (skip, если d2 нет в PATH)
-npm run test:ui   # 22 E2E-сценария puppeteer-core (нужен системный Chrome)
+npm test          # 224 теста (node:test), включая d2 CLI-паритет (skip, если d2 нет в PATH)
+npm run test:ui   # 31 E2E-сценарий puppeteer-core (нужен системный Chrome)
 ```
 
 - Системный Chrome: по умолчанию `/usr/bin/google-chrome-stable`, переопределяется переменной `CHROME`.

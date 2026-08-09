@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "test": "node --test test/",
-    "test:ui": "node --test test/ui-smoke.test.mjs"
+    "test:ui": "node --test test/ui-smoke.test.mjs test/ui-history.test.mjs"
   },
   "dependencies": {
     "puppeteer-core": "^25.5.0"
