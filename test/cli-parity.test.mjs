@@ -174,3 +174,70 @@ test("toStandardD2 output passes d2 validate even when the source is annotated",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("edge references: folded output passes d2 validate and renders the same edges", async (t) => {
+  try {
+    await exec("d2", ["--version"]);
+  } catch {
+    t.skip("d2 CLI not available");
+    return;
+  }
+  const dir = await mkdtemp(join(tmpdir(), "d2parity-eref-"));
+  try {
+    const fixtures = [
+      // [source with refs, expected folded edge lines]
+      ["a -> b\n(a -> b)[0].label: Отправка\n", "a -> b {label: Отправка}"],
+      ["a -> b\n(a -> b)[0].style.stroke: red\n", "a -> b {style.stroke: red}"],
+      ["a -> b\na -> b\n(a -> b)[*].style.stroke: red\n", "a -> b {style.stroke: red}"],
+      ["a -> b\n(a -> b).label: X\n", "a -> b {label: X}"],
+      ["a -> b -> c\n(a -> b -> c)[0].style.stroke: red\n", "a -> b {style.stroke: red}"],
+      ["a -> b\n(a -> b)[0]: hi\n", "a -> b {label: hi}"],
+      ["a -> b\n(a -> b)[0].label: hi # note\n", "a -> b {label: hi}"]
+    ];
+    for (let i = 0; i < fixtures.length; i++) {
+      const [src, folded] = fixtures[i];
+      // The reference source itself must be valid d2 and compile.
+      const file = join(dir, `f${i}.d2`);
+      await writeFile(file, src);
+      assert.equal((await cliValidate(file)).ok, true, `fixture ${i}: source valid d2`);
+      // Our parse -> serialize must produce the canonical folded inline form.
+      const r = parseD2(src);
+      assert.ok(r.ok, `fixture ${i}: parses (${JSON.stringify(r.error)})`);
+      const out = serializeClean(r.graph);
+      assert.ok(out.includes(folded), `fixture ${i}: folded form emitted\n${out}`);
+      // The folded output must be valid d2 and render the same edges.
+      const outFile = join(dir, `o${i}.d2`);
+      await writeFile(outFile, out + "\n");
+      assert.equal((await cliValidate(outFile)).ok, true, `fixture ${i}: folded output valid`);
+      const svgA = join(dir, `s${i}a.svg`);
+      const svgB = join(dir, `s${i}b.svg`);
+      await exec("d2", [file, svgA]);
+      await exec("d2", [outFile, svgB]);
+      const a = await readFile(svgA, "utf8");
+      const b = await readFile(svgB, "utf8");
+      const strokes = (s) => (s.match(/stroke="red"/g) || []).length;
+      const edges = (s) => (s.match(/class="edge"/g) || []).length;
+      assert.equal(strokes(a), strokes(b), `fixture ${i}: same red strokes`);
+      assert.equal(edges(a), edges(b), `fixture ${i}: same edge count`);
+    }
+    // Verdict parity for error cases (compile-time errors, checked via the
+    // real render: `d2 validate` is purely syntactic).
+    const errors = [
+      ["a -> b\n(a -> b)[5].label: hi\n", 2],
+      ["(c -> d)[0].label: hi\n", 1]
+    ];
+    for (const [src, line] of errors) {
+      const file = join(dir, "e.d2");
+      await writeFile(file, src);
+      const err = await exec("d2", [file, join(dir, "e.svg")]).catch((e) => e);
+      assert.ok(err.stderr, `error case errors in d2: ${src.trim()}`);
+      const m = /\.d2:(\d+):(\d+):/.exec(String(err.stderr || err.message));
+      assert.equal(Number(m && m[1]), line, `error case line matches: ${src.trim()}`);
+      const r = parseD2(src);
+      assert.equal(r.ok, false, `error case errors in our parser: ${src.trim()}`);
+      assert.equal(r.error.line, line, `error case line matches ours: ${src.trim()}`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -1047,3 +1047,214 @@ test("decodeEscapes: D2 escape set, unknown escapes drop the backslash, \\n mean
   assert.equal(decodeEscapes("line 1\\nline 2"), "line 1\nline 2");
   assert.equal(decodeEscapes("backslash\\"), "backslash\\");
 });
+
+test("edge refs: [N] index folds onto the N-th declared edge (0-based)", () => {
+  const r = parseD2("a -> b\na -> b\n(a -> b)[1].label: second\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges.length, 2);
+  assert.equal(r.graph.edges[0].label, null);
+  assert.equal(r.graph.edges[1].label, "second");
+});
+
+test("edge refs: [0] with no prior edge errors (parity: indexed edge does not exist)", () => {
+  const r = parseD2("(a -> b)[0].label: hi\n");
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /вне диапазона/);
+  assert.match(r.error.message, /нет записей 'a -> b'/);
+  assert.match(r.error.message, /объявите соединение до строки ссылки/);
+  assert.equal(r.error.line, 1);
+});
+
+test("edge refs: out-of-range message reports the found count and available indexes", () => {
+  // no prior edge at all
+  const r = parseD2("(a -> b)[2].label: hi\n");
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /нет записей 'a -> b'/);
+  // some edges, index beyond the last match
+  const r2 = parseD2("a -> b\na -> b\n(a -> b)[2].label: hi\n");
+  assert.equal(r2.ok, false);
+  assert.match(r2.error.message, /найдено 2 \(нумерация с 0: \[0\] — первая, последняя — \[1\]\)/);
+  // a lone arrow-form mismatch is reported as "no records 'a -> b'" (the key
+  // includes the arrow form)
+  const r3 = parseD2("a -- b\n(a -> b)[0].label: hi\n");
+  assert.equal(r3.ok, false);
+  assert.match(r3.error.message, /нет записей 'a -> b'/);
+});
+
+test("edge refs: bare indexed ref applies nothing but validates the range", () => {
+  // present edge: silent no-op
+  const r = parseD2("a -> b\n(a -> b)[0]\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges.length, 1);
+  assert.equal(r.graph.edges[0].label, null);
+  // missing / out-of-range edge still errors (parity: indexed edge does not exist)
+  const r2 = parseD2("(a -> b)[0]\n");
+  assert.equal(r2.ok, false);
+  assert.match(r2.error.message, /вне диапазона/);
+  const r3 = parseD2("a -> b\n(a -> b)[5]\n");
+  assert.equal(r3.ok, false);
+  assert.match(r3.error.message, /вне диапазона/);
+});
+
+test("edge refs: no index creates a new connection (parity: bare declaration)", () => {
+  const r = parseD2("a -> b\n(a -> b).label: X\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges.length, 2);
+  assert.equal(r.graph.edges[1].label, "X");
+  // undeclared pair: implicit nodes are created like a declaration
+  const r2 = parseD2("(c -> d).label: x\n");
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.deepEqual(r2.graph.edges[0], { ...E("e1", "c", "d", { label: "x" }) });
+});
+
+test("edge refs: bare ref without index declares the connection", () => {
+  const r = parseD2("(a -> b)\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.edges.map((e) => [e.source, e.target]), [["a", "b"]]);
+});
+
+test("edge refs: [*] applies to all current matches and defers to later declarations", () => {
+  const r = parseD2("a -> b\na -> b\n(a -> b)[*].style.stroke: red\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.edges.map((e) => e.rawAttrs), [["style.stroke: red"], ["style.stroke: red"]]);
+  // deferred: a match declared after the ref still gets the attribute
+  const r2 = parseD2("a -> b\n(a -> b)[*].label: all\na -> b\n");
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.deepEqual(r2.graph.edges.map((e) => e.label), ["all", "all"]);
+  // no matches at all: silent no-op
+  const r3 = parseD2("(x -> y)[*].label: hi\n");
+  assert.ok(r3.ok, JSON.stringify(r3.error));
+  assert.equal(r3.graph.edges.length, 0);
+});
+
+test("edge refs: chain (a -> b -> c)[N] applies the index to every pair independently", () => {
+  const r = parseD2("a -> b -> c\n(a -> b -> c)[0].style.stroke: red\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges.length, 2);
+  assert.deepEqual(r.graph.edges.map((e) => e.rawAttrs), [["style.stroke: red"], ["style.stroke: red"]]);
+  // index is per-pair: [1] with two a->b links but one b->c link errors
+  const r2 = parseD2("a -> b\na -> b\nb -> c\n(a -> b -> c)[1].style.stroke: red\n");
+  assert.equal(r2.ok, false);
+  assert.match(r2.error.message, /вне диапазона/);
+});
+
+test("edge refs: arrow forms match by (source, target, dir)", () => {
+  const ok = (src) => { const r = parseD2(src); assert.ok(r.ok, src + " -> " + JSON.stringify(r.error)); return r.graph; };
+  // `<-` ref does not match a `->` edge — index out of range (parity: indexed
+  // edge does not exist; the key includes the arrow form)
+  const g = parseD2("a -> b\n(a <- b)[0].label: rev\n");
+  assert.equal(g.ok, false, "cross-form ref errors");
+  assert.match(g.error.message, /вне диапазона/);
+  // a real `<-` edge is matched by its own form
+  const g2 = ok("a <- b\n(a <- b)[0].label: rev\n");
+  assert.equal(g2.edges[0].label, "rev");
+  // `-*`/`*-` normalize to `->` consistently (project deviation)
+  const g3 = ok("(a -* b)\n");
+  assert.deepEqual(g3.edges.map((e) => [e.source, e.target]), [["a", "b"]]);
+  const g4 = ok("(a *- b)\n");
+  assert.deepEqual(g4.edges.map((e) => [e.source, e.target]), [["a", "b"]]);
+});
+
+test("edge refs: `(a)` single key without an arrow is a parse error", () => {
+  for (const src of ["(a)\n", "(a)[0]\n"]) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, src);
+    assert.match(r.error.message, /ожидается соединение/);
+  }
+});
+
+test("edge refs: index token rejects non-digit non-star content", () => {
+  for (const src of ["a -> b\n(a -> b)[-1].label: hi\n", "a -> b\n(a -> b)[x].label: hi\n"]) {
+    const r = parseD2(src);
+    assert.equal(r.ok, false, src);
+    assert.match(r.error.message, /неожиданный символ в индексе/);
+  }
+});
+
+test("edge refs: `: value` without a field is a label shortcut; [*]: value labels all matches", () => {
+  const r = parseD2("a -> b\n(a -> b)[0]: hi\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges[0].label, "hi");
+  const r2 = parseD2("a -> b\na -> b\n(a -> b)[*]: all\n");
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.deepEqual(r2.graph.edges.map((e) => e.label), ["all", "all"]);
+});
+
+test("edge refs: comments above a ref go to the edge, inline # goes to trailingComment", () => {
+  const r = parseD2("# above\na -> b\n# ref note\n(a -> b)[0].label: hi # inline\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const e = r.graph.edges[0];
+  assert.deepEqual(e.comments, ["ref note"]);
+  assert.equal(e.trailingComment, "inline");
+});
+
+test("edge refs: `(a -> b)[0].foo: x` rejects a non-reserved field", () => {
+  const r = parseD2("a -> b\n(a -> b)[0].foo: x\n");
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /ключ недопустим для соединения: foo/);
+});
+
+test("edge refs: `(a, b) -> c` is a literal node key, not a reference", () => {
+  const r = parseD2("(a, b) -> c\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.nodes.map((n) => n.id), ["(a, b)", "c"]);
+  assert.deepEqual(r.graph.edges.map((e) => [e.source, e.target]), [["(a, b)", "c"]]);
+});
+
+test("edge refs: round-trip folds to canonical inline edge attrs and stays stable", () => {
+  const src = "a -> b\n(a -> b)[0].style.stroke: red\n(a -> b)[0].style.fill: yellow\n";
+  const r = parseD2(src);
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const out = serializeClean(r.graph);
+  assert.equal(out, "a\nb\n\na -> b {\n  style.stroke: red\n  style.fill: yellow\n}");
+  const r2 = parseD2(out);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.equal(serializeClean(r2.graph), out, "stable under re-serialize");
+});
+
+test("edge refs: chain declaration `a -> b -> c: label` applies to every link (d2 parity)", () => {
+  const r = parseD2("a -> b -> c: label\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(r.graph.edges.map((e) => e.label), ["label", "label"]);
+});
+
+test("edge refs: dotted paths in attr bodies stay verbatim (d2 parity)", () => {
+  const cases = [
+    "a -> b: { style.stroke: red }",
+    "a -> b: { source-arrowhead.shape: triangle }",
+    "a -> b: { target-arrowhead.style.fill: red }",
+    "a: { style.stroke: red }"
+  ];
+  for (const src of cases) {
+    const r = parseD2(src);
+    assert.ok(r.ok, src + " -> " + JSON.stringify(r.error));
+    const out = serializeClean(r.graph);
+    const r2 = parseD2(out);
+    assert.ok(r2.ok, "re-parse of " + JSON.stringify(out));
+    assert.equal(serializeClean(r2.graph), out, "stable: " + src);
+  }
+  // invalid dotted keys error (parity: unexpected field / must be reserved keywords)
+  assert.equal(parseD2("a -> b: { label.foo: bar }\n").ok, false);
+  assert.equal(parseD2("a -> b: { foo.bar: x }\n").ok, false);
+  assert.equal(parseD2("a: { label.foo: bar }\n").ok, false);
+});
+
+test("edge refs: scoped refs resolve relative to the current scope", () => {
+  const r = parseD2("a: { x -> y\n(x -> y)[0].label: hi }\n");
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(r.graph.edges.length, 1);
+  assert.equal(r.graph.edges[0].source, "x");
+  assert.equal(r.graph.edges[0].label, "hi");
+  // full path from the top level sees the nested edge
+  const r2 = parseD2("a: { x -> y }\n(a.x -> a.y)[0].label: hi\n");
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  assert.equal(r2.graph.edges[0].label, "hi");
+});
+
+test("stripMarkers invariant holds after ref folding", () => {
+  const src = "a -> b\n(a -> b)[0].label: hi # note\n";
+  const r = parseD2(src);
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const ann = serializeAnnotated(r.graph);
+  assert.equal(stripMarkers(ann), serializeClean(r.graph));
+});

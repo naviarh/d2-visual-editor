@@ -139,6 +139,34 @@
     return quote.charAt(quote.length - 1) + quote.slice(1) + "|";
   }
 
+  // Decide whether a `(` at the start of a statement opens an edge reference
+  // `(a -> b)`. d2 starts an "edge group" for any leading `(` but falls back to
+  // a plain key when the group contains no edge — `(a, b) -> c` is an edge from
+  // the node `(a, b)`, not a reference. A reference needs an arrow inside the
+  // parens, or (no arrow inside) anything after `)` that is not an arrow — a
+  // lone `(a)` reference is a deliberate parse error (plan §3.5).
+  function looksLikeRef(src, n, i) {
+    var j = i + 1;
+    var contentEnd = j;
+    while (j < n && src[j] !== "\n" && src[j] !== "\r" && src[j] !== ")") {
+      contentEnd = ++j;
+    }
+    if (j >= n || src[j] !== ")") return false;
+    var content = src.slice(i + 1, contentEnd);
+    if (content.indexOf("->") >= 0 || content.indexOf("<-") >= 0 ||
+      content.indexOf("--") >= 0 || content.indexOf("-*") >= 0 || content.indexOf("*-") >= 0) {
+      return true;
+    }
+    var k = j + 1;
+    while (k < n && (src[k] === " " || src[k] === "\t")) k++;
+    if (k >= n || src[k] === "\n" || src[k] === "\r" || src[k] === "#") return true;
+    var c0 = src[k];
+    if (c0 === "<" && src[k + 1] === "-") return false;
+    if (c0 === "-" && (src[k + 1] === "-" || src[k + 1] === ">" || src[k + 1] === "*")) return false;
+    if (c0 === "*" && src[k + 1] === "-") return false;
+    return true;
+  }
+
   // Context-aware string lexer. `inValue` is true while scanning a value
   // (after `:`), which widens the word terminator set to D2 value rules.
   function tokenize(src) {
@@ -146,6 +174,12 @@
     var i = 0, n = src.length;
     var line = 1, col = 1;
     var inValue = false;
+    // `(` only starts an edge reference at the beginning of a statement.
+    var stmtStart = true;
+    // Inside `( … )` `)` terminates a word and closes the reference.
+    var refMode = false;
+    // Right after `)` an immediately following `[ … ]` is a reference index.
+    var refIndexPending = false;
     function advance(ch) {
       if (ch === "\n") { line++; col = 1; } else { col++; }
       i++;
@@ -159,9 +193,49 @@
         tokens.push({ type: "nl", line: startLine, col: startCol });
         advance(ch);
         inValue = false;
+        stmtStart = true;
+        refMode = false;
+        refIndexPending = false;
         continue;
       }
       if (ch === " " || ch === "\t") { advance(ch); continue; }
+
+      // Edge reference opener: `(a -> b)` at statement start. Elsewhere `(`
+      // stays a literal character (`x: (a)` is a label, `a (b)` a key).
+      if (!inValue && stmtStart && ch === "(" && looksLikeRef(src, n, i)) {
+        tokens.push({ type: "punct", value: "(", line: startLine, col: startCol, off: i, end: i + 1 });
+        advance(ch);
+        stmtStart = false;
+        refMode = true;
+        continue;
+      }
+
+      // `)` closes the reference (word terminator, handled above in the word
+      // run); afterwards a `[ … ]` on the same line is the reference index.
+      if (refMode && ch === ")") {
+        tokens.push({ type: "punct", value: ")", line: startLine, col: startCol, off: i, end: i + 1 });
+        advance(ch);
+        refMode = false;
+        refIndexPending = true;
+        continue;
+      }
+      if (!inValue && refIndexPending && ch === "[") {
+        var closeB = src.indexOf("]", i + 1);
+        var nlB = closeB >= 0 ? src.slice(i + 1, closeB).indexOf("\n") : -1;
+        if (closeB >= 0 && nlB < 0) {
+          tokens.push({
+            type: "refIndex", value: src.slice(i + 1, closeB),
+            line: startLine, col: startCol, off: i, end: closeB + 1
+          });
+          while (i <= closeB) advance(src[i]);
+          refIndexPending = false;
+          continue;
+        }
+        refIndexPending = false;
+      }
+
+      // Any real token ends statement-start; `{`/`}`/`;` restore it below.
+      stmtStart = false;
 
       // Stage D: import spread (`...@`) is recognized but unsupported. d2 only
       // allows it at the start of an unquoted string (statement or value); a
@@ -309,12 +383,14 @@
         tokens.push({ type: "punct", value: ch, line: startLine, col: startCol, off: i, end: i + 1 });
         advance(ch);
         if (ch === "{" || ch === "}" || ch === "]") inValue = false;
+        if (ch === "{" || ch === "}") stmtStart = true;
         continue;
       }
       if (ch === ";") {
         tokens.push({ type: "nl", line: startLine, col: startCol });
         advance(ch);
         inValue = false;
+        stmtStart = true;
         continue;
       }
 
@@ -347,6 +423,8 @@
         if (isValueTerm(c2)) break;
         if (!inValue && (c2 === ":" || c2 === "." || c2 === "<" || c2 === ">" || c2 === "&")) break;
         if (!inValue && c2 === "-" && (src[i + 1] === "-" || src[i + 1] === ">" || src[i + 1] === "*")) break;
+        if (!inValue && c2 === "*" && src[i + 1] === "-") break;
+        if (refMode && c2 === ")") break;
         if (c2 === "\\") {
           var nx = src[i + 1];
           if (nx === undefined) { advance(c2); break; }
@@ -404,6 +482,9 @@
     var orderSet = new Set();
     var scopeStack = [null];
     var pending = [[]];
+    // Deferred `[*]` edge references: applied to every matching edge at the
+    // end of the parse (including edges declared after the reference).
+    var pendingGlobs = [];
     var sawTopLevel = false;
     // For every node whose body is a `{ … }` block: id -> inline (block opened
     // and closed on the same line). Transient: only returned on request, never
@@ -681,18 +762,57 @@
       return node;
     }
 
-    function parseAttrBody(target, key) {
+    function pushRawAttr(target, key, v) {
+      if (v == null) {
+        target.rawAttrs.push(key + ":");
+        return;
+      }
+      if (v.type === "block") {
+        // Block string value for a non-label attribute: preserve the source
+        // form in rawAttrs (content re-emitted with a stable indent).
+        var parts = String(v.value || "").split("\n").map(function (l) { return "  " + l; });
+        target.rawAttrs.push(key + ": |" + v.quote + v.tag + "\n" + parts.join("\n") + "\n" + blockStringCloser(v.quote));
+        return;
+      }
+      target.rawAttrs.push(key + ": " + (v.value != null ? v.value : v));
+    }
+
+    // Applies one attribute (`pathTokens` = key path, possibly dotted) to a
+    // node or edge. Dotted paths follow D2 semantics (§docs/plans/
+    // d2-edge-references.md): on a node only `style.*` is an attribute, on an
+    // edge only `style`/`source-arrowhead`/`target-arrowhead` sub-fields and
+    // single reserved keys are accepted.
+    function parseAttrBody(target, pathTokens) {
+      var key = pathTokens[pathTokens.length - 1].value;
+      var fullKey = pathTokens.map(function (t) { return t.value; }).join(".");
+      var dotted = pathTokens.length > 1;
+      var first = pathTokens[0].value;
+      var isNode = Array.isArray(target.children);
+      if (dotted && isNode && first !== "style" && RESERVED[first]) {
+        errorAt(pathTokens[0], "поле " + first + " не может иметь под-поля");
+      }
+      if (dotted && !isNode && first !== "style" && first !== "source-arrowhead" && first !== "target-arrowhead") {
+        errorAt(pathTokens[0], "ключ недопустим для соединения: " + fullKey);
+      }
+      if (!dotted && !isNode && !RESERVED[key]) {
+        errorAt(pathTokens[0], "ключ недопустим для соединения: " + fullKey);
+      }
+      var attrKey = key;
+      if (dotted && ((isNode && first === "style") ||
+        (!isNode && (first === "style" || first === "source-arrowhead" || first === "target-arrowhead")))) {
+        attrKey = fullKey;
+      }
       if (peekIs("{")) {
         var blockLines = captureRawBlock();
-        target.rawAttrs = target.rawAttrs.concat(key + ": {" + blockLines.map(function (l) { return "\n" + l; }).join("") + "\n}");
+        target.rawAttrs = target.rawAttrs.concat(attrKey + ": {" + blockLines.map(function (l) { return "\n" + l; }).join("") + "\n}");
         return;
       }
       var v = parseValue();
-      var isLabel = key === "label";
+      var isLabel = !dotted && key === "label";
       // `shape` applies to nodes only (edges have no `children`); array and
       // block-string values stay in rawAttrs losslessly (d2 ignores edge shape
       // and rejects composite shape values at render time).
-      var isShape = key === "shape" && Array.isArray(target.children);
+      var isShape = !dotted && key === "shape" && isNode;
       if (isLabel) {
         if (v != null) {
           if (v.type === "block") {
@@ -709,13 +829,8 @@
         // Keep the raw value (case and unknown names preserved); the renderer
         // treats absent/unknown shapes as `rectangle` (fallback).
         target.shape = String(v.value != null ? v.value : v);
-      } else if (v != null && v.type === "block") {
-        // Block string value for a non-label attribute: preserve the source
-        // form in rawAttrs (content re-emitted with a stable indent).
-        var parts = String(v.value || "").split("\n").map(function (l) { return "  " + l; });
-        target.rawAttrs.push(key + ": |" + v.quote + v.tag + "\n" + parts.join("\n") + "\n" + blockStringCloser(v.quote));
       } else {
-        target.rawAttrs.push(key + (v != null ? ": " + (v.value != null ? v.value : v) : ":"));
+        pushRawAttr(target, attrKey, v);
       }
       if (commentIsInline()) {
         var c = next();
@@ -743,7 +858,7 @@
         if (!p) { errorAt(t, "ожидается атрибут ребра"); }
         if (!peekIs(":")) { errorAt(peek(), "ожидается ':' в атрибутах ребра"); }
         next();
-        parseAttrBody(ed, p[p.length - 1].value);
+        parseAttrBody(ed, p);
       }
     }
 
@@ -774,6 +889,214 @@
       graph.edges.push(ed);
       addToOrder(ed.id);
       return ed;
+    }
+
+    function pathName(pathTokens) {
+      return pathTokens.map(function (t) { return t.value; }).join(".");
+    }
+
+    // Snapshot and clear the pending comments for the current scope (used when
+    // a `[*]` reference defers its targets to the end of the parse).
+    function takePending() {
+      var d = curDepth();
+      if (d === 0 && !sawTopLevel) {
+        graph.headerComments = graph.headerComments.concat(pending[0]);
+        pending[0] = [];
+        sawTopLevel = true;
+        return [];
+      }
+      var lines = pending[d];
+      pending[d] = [];
+      return lines;
+    }
+
+    // D2 dotted-key rule for edge references (§3.10): full path verbatim when
+    // the first segment is `style`/`source-arrowhead`/`target-arrowhead`, a
+    // single reserved key as-is, anything else is an error.
+    function validateRefField(fieldSegs, errTok) {
+      var key = fieldSegs.join(".");
+      var first = fieldSegs[0];
+      if (first === "style" || first === "source-arrowhead" || first === "target-arrowhead") return;
+      if (fieldSegs.length === 1 && RESERVED[key]) return;
+      errorAt(errTok, "ключ недопустим для соединения: " + key);
+    }
+
+    // Apply a folded reference attribute to one edge: `label` becomes the edge
+    // label field, anything else goes to rawAttrs with its full path.
+    function foldRefAttrs(edge, fieldSegs, value, comment) {
+      var key = fieldSegs.join(".");
+      if (fieldSegs.length === 1 && fieldSegs[0] === "label") {
+        if (value.type === "block") {
+          edge.label = value.value;
+          edge.labelBlock = { tag: value.tag, quote: value.quote, value: value.value };
+        } else if (value.type === "array") {
+          edge.valueArray = value.value;
+        } else {
+          edge.label = value;
+        }
+      } else {
+        pushRawAttr(edge, key, value);
+      }
+      if (comment != null) {
+        if (edge.trailingComment == null) edge.trailingComment = comment;
+        else edge.comments.push(comment);
+      }
+    }
+
+    // Resolve one `(src dir tgt)` pair of a reference. `index` is null (no
+    // index → create a new edge like a declaration), a number (N-th match),
+    // or "*" (defer to all matches at the end of the parse).
+    function resolveEdgeRef(pr, index, indexTok) {
+      var src = resolvePath(pr.srcPath);
+      var tgt = resolvePath(pr.tgtPath);
+      var dirKey = pr.dir === "->" ? undefined : pr.dir;
+      var matches = [];
+      for (var i = 0; i < graph.edges.length; i++) {
+        var e = graph.edges[i];
+        if (e.source === src.id && e.target === tgt.id && (e.dir || undefined) === dirKey) matches.push(e);
+      }
+      if (typeof index === "number") {
+        if (index < matches.length) return { kind: "edge", edge: matches[index] };
+        var arrowName = pathName(pr.srcPath) + " " + pr.dir + " " + pathName(pr.tgtPath);
+        var hint = matches.length === 0
+          ? "выше по тексту нет записей '" + arrowName + "' — объявите соединение до строки ссылки"
+          : "выше по тексту найдено " + matches.length + " (нумерация с 0: [0] — первая, последняя — [" + (matches.length - 1) + "])";
+        return {
+          kind: "miss",
+          message: "индекс соединения (" + arrowName + ")[" + index + "] вне диапазона: " + hint
+        };
+      }
+      if (index === "*") {
+        return { kind: "glob", src: src.id, tgt: tgt.id, dirKey: dirKey };
+      }
+      var ed = createEdge(pr.srcPath, pr.tgtPath, pr.dir);
+      return { kind: "edge", edge: ed };
+    }
+
+    // Value of a reference assignment plus its inline `#` comment.
+    function parseRefValue() {
+      var v = parseValue();
+      if (v == null) errorAt(peek(), "ожидается значение после ':'");
+      var cm = null;
+      if (commentIsInline()) {
+        var c = next();
+        cm = c.text;
+      }
+      return { value: v, comment: cm };
+    }
+
+    // `(a -> b)[N].field: v` — fold into existing/new edge(s). A bare
+    // reference without an index creates a connection; with an index it is a
+    // silent no-op (d2 parity).
+    function parseRef() {
+      var startTok = next();
+      var refLine = startTok.line, refCol = startTok.col;
+      var indexTok = startTok;
+      var pairs = [];
+      var srcPath = parsePath();
+      if (!srcPath) errorAt(peek(), "ожидается соединение в ссылке '(...)'");
+      while (true) {
+        if (!isArrow()) break;
+        var a = next();
+        var dir = a.value;
+        if (dir === "-*" || dir === "*-") dir = "->";
+        var tgtPath = parsePath();
+        if (!tgtPath) errorAt(peek(), "ожидается цель соединения в ссылке");
+        pairs.push({ srcPath: srcPath, dir: dir, tgtPath: tgtPath });
+        // A chain reuses the previous target as the next source: `(a -> b -> c)`
+        // yields pairs (a→b) and (b→c), each resolved independently (d2 parity).
+        srcPath = tgtPath;
+      }
+      if (pairs.length === 0) errorAt(peek(), "ожидается соединение в ссылке '(...)'");
+      if (!peekIs(")")) errorAt(peek(), "ожидается ')' в ссылке");
+      next();
+      var refEndLine = lastLine;
+
+      var hasIndex = false;
+      var index = null;
+      var it = peek();
+      if (it && it.type === "refIndex") {
+        next();
+        refEndLine = lastLine;
+        indexTok = it;
+        hasIndex = true;
+        var raw = it.value.trim();
+        if (raw === "*") index = "*";
+        else if (/^\d+$/.test(raw)) index = parseInt(raw, 10);
+        else errorAt(it, "неожиданный символ в индексе соединения (ожидаются цифры или *)");
+      }
+
+      // The continuation (`.field` or `: value`) must be on the same line.
+      var fieldSegs = null;
+      var fieldErrTok = null;
+      var value = null;
+      var refComment = null;
+      var nt = peek();
+      if (nt && nt.type === "punct" && nt.line === refEndLine && (nt.value === "." || nt.value === ":")) {
+        if (nt.value === ".") {
+          next();
+          var fseg = parsePath();
+          if (!fseg) errorAt(peek(), "ожидается поле после '.' в ссылке");
+          fieldErrTok = fseg[0];
+          fieldSegs = [];
+          for (var fi = 0; fi < fseg.length; fi++) fieldSegs.push(fseg[fi].value);
+          if (!peekIs(":")) errorAt(peek(), "ожидается ':' в ссылке");
+          next();
+        } else {
+          next();
+          fieldSegs = ["label"];
+        }
+        var pv = parseRefValue();
+        value = pv.value;
+        refComment = pv.comment;
+      }
+
+      if (fieldSegs != null) {
+        validateRefField(fieldSegs, fieldErrTok || startTok);
+        var firstTarget = null;
+        for (var pi = 0; pi < pairs.length; pi++) {
+          var pr = pairs[pi];
+          var res = resolveEdgeRef(pr, index, indexTok);
+          if (res.kind === "miss") {
+            errorAt(indexTok, res.message);
+          } else if (res.kind === "glob") {
+            pendingGlobs.push({
+              src: res.src, tgt: res.tgt, dirKey: res.dirKey,
+              fieldSegs: fieldSegs, value: value, comment: refComment,
+              comments: takePending()
+            });
+          } else {
+            foldRefAttrs(res.edge, fieldSegs, value, refComment);
+            if (firstTarget == null) firstTarget = res.edge;
+          }
+        }
+        if (firstTarget != null) consumePending(firstTarget);
+        return;
+      }
+
+      // Bare reference: no index → declare the connection(s). A numeric index
+      // applies nothing but still validates the range (d2: "indexed edge does
+      // not exist" fires even without an assignment); `[*]` is a silent no-op.
+      if (hasIndex) {
+        if (commentIsInline()) {
+          pending[curDepth()].push(next().text);
+        }
+        if (typeof index === "number") {
+          for (var ri = 0; ri < pairs.length; ri++) {
+            var rp = pairs[ri];
+            var rres = resolveEdgeRef(rp, index, indexTok);
+            if (rres.kind === "miss") errorAt(indexTok, rres.message);
+          }
+        }
+        return;
+      }
+      var bareEdges = [];
+      for (var bi = 0; bi < pairs.length; bi++) {
+        var bpr = pairs[bi];
+        bareEdges.push(createEdge(bpr.srcPath, bpr.tgtPath, bpr.dir));
+      }
+      if (bareEdges.length) consumePending(bareEdges[0]);
+      attachInlineEdge(bareEdges);
     }
 
     function parseEdge(firstPath) {
@@ -807,23 +1130,52 @@
       if (t && t.type === "punct" && t.value === ":") {
         next();
         if (peekIs("{")) {
-          parseEdgeAttrBlock(edges[edges.length - 1]);
+          // Parse the block once into a buffer, copy onto every edge of the
+          // chain (d2 applies `a -> b -> c: {…}` to each link). Comments
+          // inside the block go only to the last edge.
+          var buf = { label: null, trailingComment: null, rawAttrs: [], labelBlock: null, valueArray: null, comments: [] };
+          parseEdgeAttrBlock(buf);
+          for (var bi = 0; bi < edges.length; bi++) {
+            var be = edges[bi];
+            be.label = buf.label;
+            if (buf.labelBlock != null) be.labelBlock = buf.labelBlock;
+            if (buf.valueArray != null) be.valueArray = buf.valueArray;
+            be.rawAttrs = be.rawAttrs.concat(buf.rawAttrs);
+            if (buf.trailingComment != null && be.trailingComment == null) be.trailingComment = buf.trailingComment;
+          }
+          if (buf.comments.length) {
+            edges[edges.length - 1].comments = edges[edges.length - 1].comments.concat(buf.comments);
+          }
         } else {
           var v = parseValue();
           if (v != null) {
-            var le = edges[edges.length - 1];
-            if (v.type === "block") {
-              le.label = v.value;
-              le.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
-            } else if (v.type === "array") {
-              le.valueArray = v.value;
-            } else {
-              le.label = v;
+            for (var ei = 0; ei < edges.length; ei++) {
+              var le = edges[ei];
+              if (v.type === "block") {
+                le.label = v.value;
+                le.labelBlock = { tag: v.tag, quote: v.quote, value: v.value };
+              } else if (v.type === "array") {
+                le.valueArray = v.value;
+              } else {
+                le.label = v;
+              }
             }
           }
         }
       } else if (t && t.type === "punct" && t.value === "{") {
-        parseEdgeAttrBlock(edges[edges.length - 1]);
+        var buf2 = { label: null, trailingComment: null, rawAttrs: [], labelBlock: null, valueArray: null, comments: [] };
+        parseEdgeAttrBlock(buf2);
+        for (var bj = 0; bj < edges.length; bj++) {
+          var be2 = edges[bj];
+          be2.label = buf2.label;
+          if (buf2.labelBlock != null) be2.labelBlock = buf2.labelBlock;
+          if (buf2.valueArray != null) be2.valueArray = buf2.valueArray;
+          be2.rawAttrs = be2.rawAttrs.concat(buf2.rawAttrs);
+          if (buf2.trailingComment != null && be2.trailingComment == null) be2.trailingComment = buf2.trailingComment;
+        }
+        if (buf2.comments.length) {
+          edges[edges.length - 1].comments = edges[edges.length - 1].comments.concat(buf2.comments);
+        }
       }
       attachInlineEdge(edges);
       return edges;
@@ -836,8 +1188,24 @@
         var key = pathTokens[pathTokens.length - 1].value;
         var scopeNode = curScope();
         next();
+        var first = pathTokens[0].value;
+        // Dotted path starting with a reserved key: `style.*` is an attribute
+        // of the enclosing container (rawAttrs with the full path); other
+        // reserved keys cannot have sub-fields (d2 "unexpected field"). At the
+        // top level `style.fill: yellow` still declares nested nodes.
+        if (pathTokens.length > 1 && RESERVED[first]) {
+          if (scopeNode && first === "style") {
+            parseAttrBody(scopeNode, pathTokens);
+            return;
+          }
+          if (!scopeNode && first === "style") {
+            // fall through — nested containers, d2 parity
+          } else {
+            errorAt(pathTokens[0], "поле " + first + " не может иметь под-поля");
+          }
+        }
         if (scopeNode && single && RESERVED[key]) {
-          parseAttrBody(scopeNode, key);
+          parseAttrBody(scopeNode, pathTokens);
           return;
         }
         if (peekIs("{")) {
@@ -909,6 +1277,11 @@
         return true;
       }
       if (t.type === "punct") {
+        if (t.value === "(") {
+          parseRef();
+          checkStatementEnd();
+          return true;
+        }
         if (t.value === "}") { errorAt(t, "лишняя закрывающая скобка '}'"); }
         if (t.value === "]") { errorAt(t, "лишняя закрывающая скобка ']'"); }
         errorAt(t, "неожиданный символ '" + t.value + "'");
@@ -957,6 +1330,23 @@
         parseStatement();
       }
       for (var i = 0; i < graph.nodes.length; i++) delete graph.nodes[i]._path;
+      // Deferred `[*]` references apply to every matching edge (including ones
+      // declared after the reference); no matches at all is a silent no-op.
+      for (var gi = 0; gi < pendingGlobs.length; gi++) {
+        var pg = pendingGlobs[gi];
+        var any = false;
+        for (var ei = 0; ei < graph.edges.length; ei++) {
+          var e = graph.edges[ei];
+          if (e.source === pg.src && e.target === pg.tgt && (e.dir || undefined) === pg.dirKey) {
+            foldRefAttrs(e, pg.fieldSegs, pg.value, pg.comment);
+            if (pg.comments.length) e.comments = pg.comments.concat(e.comments);
+            any = true;
+          }
+        }
+        if (!any && pg.comments.length) {
+          graph.trailingComments = pg.comments.concat(graph.trailingComments);
+        }
+      }
       graph.trailingComments = graph.trailingComments.concat(pending[0]);
       return graph;
     }
