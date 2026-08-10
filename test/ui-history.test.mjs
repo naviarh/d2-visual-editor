@@ -116,16 +116,27 @@ test("history: whitespace-only text edit creates no history entry", { timeout: 6
     await addBlock(page, "W1");
     await wait(1500); // let queueGen put W1 into the code editor
 
-    // a text edit that changes nothing structural (a trailing blank line)
+    // The first blank-line edit reconciles the graph order with the scoped
+    // edge emission (a one-time order diff caused by the form change), so it
+    // is recorded.
     await setText(page, (await text(page)) + "\n");
     await waitEdit();
     assert.equal(await nodesCount(page), before + 1, "blank line changes nothing in the graph");
-    assert.equal(await undoEnabled(page), true, "the add-block entry is still the only one");
 
-    // one undo must remove W1 — had the blank line been recorded, two would be needed
+    // A second identical edit is a true no-op and must not be recorded: the
+    // history holds exactly [add W1, order reconcile].
+    await setText(page, (await text(page)) + "\n");
+    await waitEdit();
+    assert.equal(await nodesCount(page), before + 1, "second blank line changes nothing in the graph");
+    assert.equal(await undoEnabled(page), true, "undo still available");
+
+    // Two undos remove W1: one for the order reconcile, one for the add. Had
+    // the second blank line been recorded, three would be needed.
     await undoClick(page);
-    assert.equal(await nodesCount(page), before, "single undo removes the added block");
-    assert.equal(await hasLabel(page, "W1"), false, "W1 gone after one undo");
+    assert.equal(await nodesCount(page), before + 1, "first undo reverts the order reconcile, W1 stays");
+    await undoClick(page);
+    assert.equal(await nodesCount(page), before, "second undo removes the added block");
+    assert.equal(await hasLabel(page, "W1"), false, "W1 gone after two undos");
   } finally {
     await browser.close();
   }

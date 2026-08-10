@@ -76,6 +76,46 @@
     return path;
   }
 
+  // Strict ancestor ids of `id` (parent, grandparent, … root), excluding `id`.
+  function strictAncestors(byId, id) {
+    var set = new Set();
+    var n = byId.get(id);
+    var guard = 0;
+    while (n && n.parentId && guard++ < 1000) {
+      n = byId.get(n.parentId);
+      if (n) set.add(n.id);
+    }
+    return set;
+  }
+
+  // Nearest container that is strictly above BOTH endpoints of the edge, or
+  // null when the endpoints have no common container (a top-level edge). An
+  // edge whose endpoints share a container is emitted inside that container's
+  // block, with paths relative to it; a root edge keeps full root-relative
+  // paths.
+  function edgeScope(byId, ed) {
+    var src = strictAncestors(byId, ed.source);
+    var n = byId.get(ed.target);
+    var cur = n && n.parentId ? byId.get(n.parentId) : null;
+    var guard = 0;
+    while (cur && guard++ < 1000) {
+      if (src.has(cur.id)) return cur.id;
+      cur = cur.parentId ? byId.get(cur.parentId) : null;
+    }
+    return null;
+  }
+
+  // Path from the scope node down to `id`, each segment quoted as a D2 key.
+  // Without a scope this is the full root-relative path.
+  function relPath(byId, scopeId, id) {
+    var path = nodePath(byId, id);
+    if (!scopeId) return path.map(d2Key).join(".");
+    var sp = nodePath(byId, scopeId);
+    var common = 0;
+    while (common < path.length && common < sp.length && path[common] === sp[common]) common++;
+    return path.slice(common).map(d2Key).join(".");
+  }
+
   function treeOrder(graph) {
     var byId = indexNodes(graph);
     var order = [];
@@ -204,7 +244,7 @@
         visiting.delete(n.id);
         return true;
       }
-      emitNode(n, depth, byId, lines, annotated, refIds);
+      emitNode(n, depth, byId, byEdge, order, emitted, lines, annotated, refIds);
       markTree(n);
       return true;
     }
@@ -223,8 +263,11 @@
       }
       var ed = byEdge.get(id);
       if (ed && !emitted.has(id)) {
+        // An edge whose endpoints share a container is not emitted here: it is
+        // written inside that container's block when the block is emitted.
+        if (edgeScope(byId, ed) !== null) continue;
         if (prevType === "node") lines.push("");
-        emitEdge(ed, byId, lines);
+        emitEdge(ed, byId, lines, "", null);
         emitted.add(id);
         prevType = "edge";
       }
@@ -244,7 +287,7 @@
     return parts.length ? " " + parts.join(" ") : "";
   }
 
-  function emitNode(n, depth, byId, lines, annotated, refIds) {
+  function emitNode(n, depth, byId, byEdge, order, emitted, lines, annotated, refIds) {
     var ind = "  ".repeat(depth);
     for (var c = 0; c < (n.comments || []).length; c++) {
       pushComment(lines, ind, n.comments[c]);
@@ -283,7 +326,32 @@
       else if (hasLabel) lines.push(ind + "  label: " + d2Value(n.label));
       if (hasShape) lines.push(ind + "  shape: " + d2Value(n.shape));
       for (var r = 0; r < raw.length; r++) appendRaw(lines, ind, raw[r]);
-      for (var d = 0; d < kids.length; d++) emitNode(kids[d], depth + 1, byId, lines, annotated, refIds);
+      // Body entries follow the graph order: direct children interleaved with
+      // edges whose nearest common container is this node. A scoped edge
+      // implies at least one direct child, so it is never the sole reason a
+      // block is multi-line (singleParam above stays correct).
+      var seen = new Set();
+      for (var d = 0; d < order.length; d++) {
+        var oid = order[d];
+        var on = byId.get(oid);
+        if (on && on.parentId === n.id) {
+          emitNode(on, depth + 1, byId, byEdge, order, emitted, lines, annotated, refIds);
+          seen.add(on.id);
+          continue;
+        }
+        var oe = byEdge.get(oid);
+        if (oe && !emitted.has(oe.id) && edgeScope(byId, oe) === n.id) {
+          emitEdge(oe, byId, lines, ind + "  ", n.id);
+          emitted.add(oe.id);
+        }
+      }
+      // Children missing from `order` (hand-built graphs) are still emitted,
+      // keeping their children[] order, after the ordered entries.
+      for (var d2 = 0; d2 < kids.length; d2++) {
+        if (!seen.has(kids[d2].id)) {
+          emitNode(kids[d2], depth + 1, byId, byEdge, order, emitted, lines, annotated, refIds);
+        }
+      }
       lines.push(ind + "}");
     }
 
@@ -329,16 +397,17 @@
     for (var i = 0; i < parts.length; i++) lines.push(ind + "  " + parts[i]);
   }
 
-  function emitEdge(ed, byId, lines) {
+  function emitEdge(ed, byId, lines, ind, scopeId) {
+    ind = ind || "";
     var s = byId.get(ed.source);
     var t = byId.get(ed.target);
     if (!s || !t) return;
     for (var c = 0; c < (ed.comments || []).length; c++) {
-      pushComment(lines, "", ed.comments[c]);
+      pushComment(lines, ind, ed.comments[c]);
     }
-    var src = nodePath(byId, ed.source).map(d2Key).join(".");
-    var tgt = nodePath(byId, ed.target).map(d2Key).join(".");
-    var line = src + " " + (ed.dir || "->") + " " + tgt;
+    var src = relPath(byId, scopeId, ed.source);
+    var tgt = relPath(byId, scopeId, ed.target);
+    var line = ind + src + " " + (ed.dir || "->") + " " + tgt;
     var lb = ed.labelBlock;
     var plainLabel = ed.label;
     if (lb) {
@@ -363,9 +432,9 @@
     }
     if (attrs.length > 1) {
       lines.push(line + " {");
-      for (var a = 0; a < attrs.length; a++) appendRaw(lines, "", attrs[a]);
-      if (ed.trailingComment) lines.push("} # " + ed.trailingComment);
-      else lines.push("}");
+      for (var a = 0; a < attrs.length; a++) appendRaw(lines, ind, attrs[a]);
+      if (ed.trailingComment) lines.push(ind + "} # " + ed.trailingComment);
+      else lines.push(ind + "}");
       return;
     }
     if (ed.trailingComment) line += " # " + ed.trailingComment;
@@ -404,6 +473,8 @@
     indexNodes: indexNodes,
     indexEdges: indexEdges,
     nodePath: nodePath,
+    edgeScope: function (graph, ed) { return edgeScope(indexNodes(graph), ed); },
+    relPath: relPath,
     treeOrder: treeOrder,
     defaultOrder: defaultOrder,
     serializeClean: serializeClean,

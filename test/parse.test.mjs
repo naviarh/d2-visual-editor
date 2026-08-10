@@ -196,7 +196,10 @@ test("nested edges: edges inside a container are scoped to it", () => {
   assert.equal(b.parentId, "a");
   assert.equal(c.parentId, "a");
   assert.deepEqual(g.edges.map((e) => [e.source, e.target]), [["b", "c"]]);
-  assert.ok(serializeClean(g).includes("a.b -> a.c") || serializeClean(g).includes('"a".b -> "a".c'));
+  assert.ok(
+    serializeClean(g).includes("a: {\n  b\n  c\n  b -> c\n}"),
+    "edge emitted inside its container with scope-relative paths"
+  );
 });
 
 test("chain a -> b -> c produces two edges", () => {

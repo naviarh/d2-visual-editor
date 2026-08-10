@@ -701,3 +701,72 @@ test("toStandardD2: equals serializeClean, strips position markers, keeps block 
   assert.ok(annotated.includes("--- @d2pos"), "annotated source has markers");
   assert.equal(toStandardD2(g, ref), serializeClean(g));
 });
+
+test("edgeScope: nearest container strictly above both endpoints", () => {
+  const node = (id, parentId) => ({ id, label: id, x: 0, y: 0, w: 10, h: 10, parentId, children: [], comments: [], trailingComment: null, rawAttrs: [] });
+  const graph = (nodes, edges) => ({ v: 2, nodes, edges, order: [], headerComments: [], trailingComments: [], idCounter: 1, viewport: {}, showComments: false });
+  const g = graph(
+    [node("root", null), node("G", null), node("H", "G"), node("a", "H"), node("b", "H"), node("c", "G"), node("x", "G")],
+    [
+      { id: "e1", source: "a", target: "b" },
+      { id: "e2", source: "a", target: "c" },
+      { id: "e3", source: "c", target: "x" },
+      { id: "e4", source: "c", target: "root" },
+      { id: "e5", source: "root", target: "a" },
+      { id: "e6", source: "c", target: "a" },
+      { id: "e7", source: "a", target: "a" }
+    ]
+  );
+  assert.equal(mod.edgeScope(g, g.edges[0]), "H", "siblings inside H scope to H");
+  assert.equal(mod.edgeScope(g, g.edges[1]), "G", "H.a -> G.c scopes to G");
+  assert.equal(mod.edgeScope(g, g.edges[2]), "G", "two children of G scope to G");
+  assert.equal(mod.edgeScope(g, g.edges[3]), null, "edge to root node stays top-level");
+  assert.equal(mod.edgeScope(g, g.edges[4]), null, "edge from root node stays top-level");
+  assert.equal(mod.edgeScope(g, g.edges[5]), "G", "sibling branches scope to G");
+  assert.equal(mod.edgeScope(g, g.edges[6]), "H", "self-loop scopes to the node's parent");
+});
+
+test("scoped edges: emitted inside the nearest common container with relative paths", () => {
+  const r = parseD2(
+    'G: {\n  H: {\n    a\n    b\n  }\n  c\n}\n' +
+    "G.H.a -> G.H.b\n" +
+    "G.H.a -> G.c\n" +
+    "1 -> G.c\n"
+  );
+  assert.ok(r.ok, JSON.stringify(r.error));
+  const out = serializeClean(r.graph);
+  assert.ok(out.includes("  H: {\n    a\n    b\n    a -> b\n  }"), "edge scoped to H: " + JSON.stringify(out));
+  assert.ok(out.includes("  H.a -> c"), "edge scoped to G uses relative source: " + JSON.stringify(out));
+  assert.ok(out.includes("1 -> G.c"), "top-level edge keeps the full path: " + JSON.stringify(out));
+
+  // Round-trip: re-parsing the scoped output yields the same flat edges.
+  const r2 = parseD2(out);
+  assert.ok(r2.ok, JSON.stringify(r2.error));
+  const pairs = (g) => g.edges.map((e) => e.source + " -> " + e.target).sort();
+  assert.deepEqual(pairs(r2.graph), pairs(r.graph), "scoped emission round-trips to the same edges");
+});
+
+test("scoped edges: interleave with children in graph order, missing children still emitted", () => {
+  const node = (id, parentId, extra) => Object.assign({ id, label: id, x: 0, y: 0, w: 10, h: 10, parentId, children: [], comments: [], trailingComment: null, rawAttrs: [] }, extra || {});
+  const g = {
+    v: 2,
+    nodes: [
+      node("G", null, { children: ["a", "b", "orphan"] }),
+      node("a", "G"),
+      node("b", "G"),
+      node("orphan", "G")
+    ],
+    edges: [{ id: "e1", source: "a", target: "b", label: null, comments: [], trailingComment: null }],
+    order: ["G", "a", "e1", "b"],   // edge interleaved between children
+    headerComments: [], trailingComments: [],
+    idCounter: 2, viewport: { x: 0, y: 0, zoom: 1 }, showComments: false
+  };
+  const out = serializeClean(g);
+  assert.ok(out.includes("  a\n  a -> b\n  b\n  orphan\n"), "order interleaves the edge, orphan child still emitted: " + JSON.stringify(out));
+});
+
+test("annotated parity holds for scoped edges (stripMarkers)", () => {
+  const r = parseD2('G: {\n  a # @d2pos 10,20\n  b # @d2pos 30,40\n  a -> b\n}\n');
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.equal(stripMarkers(serializeAnnotated(r.graph)), serializeClean(r.graph), "annotated = clean + markers with scoped edges");
+});
